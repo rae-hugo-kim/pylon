@@ -1,89 +1,72 @@
-name: read-path-remirror-109
-status: done
-completed: 2026-11-20
-version: 7
-task_id: "20261118-162627-109a"
-# gh-loop worker Stage 2에 따라 이슈 #109 본문(F1~F4, AC 5개, 범위 밖)과 코디네이터 댓글 두 건
-# (2026-11-13 병합분 C2·C3·D5, 2026-11-18 추가분 아카이브 멤버 `?q=`·추가 AC)을 명세로 삼습니다.
-# 2026-11-18 추가분의 `;` 목록 항목과 그 AC는 사용자 결정(2026-11-19, nonce 1795061063-30379)으로 #150에 분리했습니다.
-# 이슈 본문과 댓글이 사용자 승인 명세이므로 처음부터 approved로 씁니다. 직전 완료 seed(bootstrap-source-only-skills-134)는 git 이력에 보존합니다.
+name: read-path-mutation-targets-152
+status: approved
+version: 1
+task_id: "20261121-235150-0dd2"
+# gh-loop worker Stage 2에 따라 이슈 #152 본문(항목 8건, 범위 3항, AC 4개, 범위 밖 2건)을 명세로 삼습니다.
+# 이슈 본문이 사용자 승인 명세이므로 처음부터 approved로 씁니다. 직전 완료 seed(read-path-remirror-109)는 git 이력에 보존합니다.
 goal: >
-  #109: gates/read-path.mjs의 read/write 경로 해석을 omp 18.22.0에 다시 맞춥니다(기준선 18.3.0).
-  read의 `?` 쿼리, 꼬리가 섞인 콤마 범위, 대문자 셀렉터, 컨테이너 멤버(아카이브·SQLite·PDF 페이지)가
-  read-log에 유령 경로를 남겨 뒤따르는 edit/write가 context-gate에 거짓 차단되던 경로를 없애고,
-  write에 복사된 `[path#TAG]` 래퍼가 읽지 않은 기존 파일의 덮어쓰기를 통과시키던 우회를 막습니다.
+  #152: gates/read-path.mjs가 `write`·`edit` 대상을 입력 문자열이 아니라 omp 18.22.0이 실제로 여는 파일로
+  해석하게 해, 읽지 않은 파일이 context-gate를 통과하던 경로(#109 리뷰에서 범위 밖으로 남긴 기존 결함 7건)를
+  막고, 삭제 경합 1건은 닫거나 근거를 붙여 잔존면으로 기록합니다.
 constraints:
-  - "over-strip(읽지 않은 파일을 읽은 것으로 기록)은 under-strip(유령 경로 → 거짓 차단)보다 나쁜 방향입니다. 업스트림과 다르게 둘 수밖에 없는 형태는 덜 벗기는 쪽으로 둡니다."
-  - "업스트림 동작은 추측하지 않고 문서(omp://tools/read.md, xd://read/sources, omp://tools/write.md), v18.22.0 소스(`packages/tui/src/tools/read.ts`, `packages/coding-agent/src/tools/{read,read-archive,hashline-header-path}.ts`), 실제 도구 실측으로 확인합니다."
-  - "`readTarget(input, cwd)`은 결과의 details를 받는 `readTarget(input, details, cwd)`로 바뀌고 반환형(문자열, 기록할 것이 없으면 빈 문자열)은 그대로입니다. 이슈 AC의 `readTarget(...) → <cwd>/<file>`은 결과에 details가 아예 없는 경우의 문법 해석으로 검증하고, 실제 결과 형태는 종단 테스트(read-ledger-wiring)로 검증합니다."
-  - "무엇을 읽었는지는 omp가 압니다 — 읽은 파일은 결과가 싣는 경로로 기록합니다. `details.meta.source`가 `path`일 때만 파일로 보고 `details.resolvedPath`(없으면 소스 값)를 씁니다. 입력을 `;`로 쪼개거나 omp의 디스크 의존 우선순위(리터럴 파일, 아카이브·SQLite 후보)를 재현하지 않습니다. 이슈 본문이 비교를 요청한 '결과의 경로 우선, 문자열 해석은 폴백' 안입니다(r1·r2 리뷰: 입력에서 추측한 두 설계가 모두 읽지 않은 파일을 기록했습니다)."
-  - "details가 실린 결과 가운데 소스가 `path`인 것만 파일에 귀속합니다. 소스가 `path`가 아닌 결과, 소스 없이 `resolvedPath`·`suffixResolution`만 실린 결과, 소스에 대해 아무것도 말하지 않는 결과(문서 변환 실패의 `{fileSize}`)는 어떤 파일에도 귀속하지 않습니다. omp가 보고한 경로에는 입력 문법의 `?` 컷을 적용하지 않습니다(r3 리뷰 권고, 2026-11-19 사용자 결정 A; r6 뒤 2026-11-20 사용자 결정 B, nonce 1795065889-17454)."
-  - "목록 읽기(`details.displayReadTargets`가 실린 결과)는 아무것도 기록하지 않습니다 — omp가 열기만 하고 보여 주지 않은 부분(`a.md:99999;b.md`)에도 링크를 실어 어느 부분의 내용이 표시됐는지 결과만으로 알 수 없고, 본문 헤더로 가려내는 안은 r4·r5 리뷰에서 계속 틈이 드러났습니다. 목록으로 읽은 파일은 단독으로 다시 읽어야 고칠 수 있으며 이는 #109 이전과 같은 결과입니다(목록 지원은 #150, 2026-11-19 사용자 결정 A, nonce 1795061063-30379)."
-  - "문법 해석은 결과에 details가 아예 없을 때만 씁니다(2026-11-20 사용자 결정 B — r1·r2·r6의 결함이 모두 문법 추측 경로에서 나왔고 실제 세션에서 이 경로에 도달한 읽기가 없습니다). 그때도 해석 결과보다 긴 접두(`:`나 `?` 앞, 또는 문자열 전체)가 디스크에 있거나 입력이 4,096자를 넘어 전체를 확인할 수 없으면 아무것도 기록하지 않습니다(r6 high)."
-  - "기준 버전 문구는 2026-11-13 AC 후보가 적은 18.18.6이 아니라 실제로 대조·실측한 18.22.0으로 적습니다(2026-11-18 댓글 §4가 기준 주소·버전 문구의 갱신을 지시)."
-  - "버전 범프·태그·자동 머지·force-push는 하지 않습니다."
+  - "읽지 않은 파일을 읽은 것으로 기록하거나 실제로 바뀌는 파일을 게이트가 놓치는 방향이 유령 경로(거짓 차단)보다 나쁩니다. omp의 동작을 알 수 없는 형태는 닫힌 쪽(게이트 대상에 넣는 쪽)으로 둡니다."
+  - "업스트림 동작은 추측하지 않고 문서(omp://tools/write.md), v18.22.0 소스(`packages/coding-agent/src/tools/{write,path-utils,conflict-detect,sqlite-reader}.ts`, `packages/coding-agent/src/internal-urls/router.ts`, `packages/utils/src/{path.ts,ar/open.ts,ar/registry.ts}`, `crates/pi-edit/src/path_policy.rs`, `packages/coding-agent/src/extensibility/tool-event-input.ts`), 실제 도구 실측으로 확인합니다."
+  - "항목마다 재현 테스트를 먼저 쓰고(RED) 고치거나, 근거와 함께 잔존면으로 둡니다(이슈 범위 1)."
+  - "1번은 omp `write`의 컨테이너 문법(`parseArchivePathCandidates`·`parseSqlitePathCandidates`와 `#resolveArchiveWritePath`·`#resolveSqliteWritePath`의 디스크 우선순위)을, 2번은 omp `expandPath`와 `resolveToCwd`를 기준으로 맞춥니다(이슈 범위 2)."
+  - "`write`와 `edit`은 경로 해석이 다릅니다 — `write`는 TypeScript 라우터·`resolveToCwd`(절대 경로는 철자 그대로, WSL 드라이브 매핑, `local://` 접두 재작성, `<file>:conflict://N`), `edit`은 pi-edit `path_policy.rs`(모든 경로를 문자열로 접음, 두 재작성 없음, `file://`은 경로). 도구별로 따로 미러합니다."
+  - "omp `expandPath`와 같은 규칙을 pi-edit `expand_path`가 `edit`에 적용하므로, 2번의 확장은 `edit` 대상(직접 `path`·`paths`·패치 헤더)에도 같은 함수로 적용합니다. `write`만 고치면 `edit [@/abs/file.md#TAG]`가 같은 우회로 남습니다."
+  - "8번(삭제 경합)은 잔존면으로 둡니다. 멤버 읽기와 '읽은 뒤 지워진 실제 파일'은 핸들러에 같은 입력·같은 details·같은 디스크로 도착해 이벤트만으로 가를 수 없습니다. 닫는 방법은 `<archive>:<member>` 보고를 아카이브로 줄이지 않는 것뿐이고, 그러면 1번이 아카이브 쓰기를 아카이브 읽음에 묶기 때문에 JSON·PDF 멤버를 읽은 뒤 그 아카이브에 쓰는 흐름이 막힙니다(#109 AC5의 거짓 차단 복귀). 전제(아카이브 옆의 `<archive>:<member>` 이름 실제 파일 + 읽기와 핸들러 사이의 외부 삭제)가 좁아 그 대가를 치르지 않습니다."
+  - "통합 계약의 원장 정규화 문단과 그 안의 잔존면 서술을 결과에 맞게 고칩니다(이슈 범위 3). 같은 배치의 다른 워커가 `.omp/rules/harness-harness_integration_contract.md`·`docs/harness/audit.jsonl`·`CHANGELOG.md`를 함께 건드리므로 이 이슈 범위 밖의 줄은 고치지 않습니다."
+  - "버전 범프·태그·머지·force-push는 하지 않습니다."
 acceptance_criteria:
   - id: AC1
-    title: "F1 — `package.json?q=.scripts`, `docs/harness/audit.jsonl?q=.event&limit=5`, `logo.png?q=…`, `db.sqlite?q=SELECT …`가 쿼리를 벗긴 `<cwd>/<file>`로 풀립니다."
+    title: "읽지 않은 `arc.tar`에 대한 `write arc.tar:member.json`과 읽지 않은 `/abs/file.md`에 대한 `write @/abs/file.md`가 context-gate에 막힙니다(회귀 테스트). `editTargets('write', { path: 'arc.tar:member.json' }, cwd)`는 `[<cwd>/arc.tar]`를 돌려줍니다."
   - id: AC2
-    title: "F2 — `editTargets('write', { path: '[src/foo.ts#1A2B]' }, CWD)`가 `[<cwd>/src/foo.ts]`를 돌려주고, context-gate가 읽지 않은 `src/foo.ts`의 덮어쓰기를 차단합니다."
+    title: "`://`를 포함한 로컬 경로의 `write`가 게이트 대상이 됩니다(`notes/a://b.md` → `<cwd>/notes/a:/b.md`). omp가 URL로 다루는 형태만 가상 주소로 남고, 모르는 스킴은 그 문자열이 가리킬 파일로 판정합니다."
   - id: AC3
-    title: "F3·D5 — `attachment`·`cfg`·`security`·`vault`·`out`·`mr`이 `://`와 `:/` 양쪽에서 가상 경로로 판정돼 `readTarget`은 `''`, `localFileTarget`은 `null`입니다."
+    title: "4~8번 각각에 재현 테스트와 처리 결과가 있습니다 — 4(edit 직접 경로 래퍼)·5(헤더 줄 경계)·7(심볼릭 링크를 건넌 `..`)은 수정, 6(경로 안 개행)은 #111에서 닫힌 것을 핸들러 수준 테스트로 고정, 8(삭제 경합)은 근거가 붙은 잔존면 기록."
   - id: AC4
-    title: "F4 — `SEARCH_ANCHOR_HEADER`가 `[path/with#hash.ts#1A2B]`를 매칭하고, `READ_SELECTOR`가 `:RAW`/`:IMG`/`:-60+10`을 벗깁니다."
-  - id: AC5
-    title: "C2·C3·아카이브 — `a.md:1-30,-30`·`a.md:1-30,:-30`·`doc.pdf:page3.png`·`arc.tar:member.json?q=.x`가 파일 경로만 남깁니다."
-  - id: AC6
-    title: "D5 — `read-path.mjs`의 문법 주석과 `harness-harness_integration_contract.md`의 미러 서술이 기준 버전 18.22.0과 기준 주소(`xd://read/sources` 포함)를 가리킵니다."
-  - id: AC7
-    title: "`node --test .omp/extensions/harness/tests/read-path.test.mjs`와 전체 `tests/*.test.mjs`, `node scripts/docs-drift`가 통과하고(항목별 RED→GREEN 회귀 테스트 포함) `CHANGELOG.md` `[Unreleased]`에 항목이 있습니다."
+    title: "`node --test .omp/extensions/harness/tests/*.test.mjs` 전 항목과 `node scripts/docs-drift`가 통과하고, `CHANGELOG.md` `[Unreleased]`와 통합 계약의 원장 정규화 문단이 결과를 반영합니다."
 out_of_scope:
-  - "`;` 목록 읽기의 부분별 기록(2026-11-18 추가분 §1과 그 AC) — #150으로 분리했습니다. 이 PR에서 목록 읽기는 아무것도 기록하지 않습니다."
-  - "에이전트·문서 정합(#110)과 워크트리 CoW 상태 격리·commitTargetDir(#111)."
-  - "`harness-friction`의 `references/harness-surface.md` 갱신(2026-11-17 감사 사이클 ④)."
-  - "`edit`의 `MV DEST` 대상을 read-log에 넣는 것(2026-11-18 댓글 §4가 선택 사항으로 둠 — 이번에는 넣지 않습니다)."
-  - "`edit.citationTags` 활성화 시의 `HASHLINE_HEADER` 재검(#10)."
-  - "`~` 확장·`file://`·`www.` 대상·suffix 해석처럼 이번 감사가 지목하지 않은 기존 경로 형태."
-  - "`write`의 컨테이너 대상(`arc.tar:member`, `db.sqlite:table[:key]`)을 컨테이너 파일로 게이트하는 것과 `edit` 직접 경로의 래퍼 언래핑 — r1 리뷰가 지목한 기존 결함으로 이슈 범위 밖입니다(후속 이슈 권고)."
-  - "`write` 게이트가 omp `expandPath`(`@/abs/file`)를 반영하지 않는 것 — r6 리뷰가 지목한 기존 결함입니다. 이 PR에서 고치지 않고 PR 본문의 기존 결함 목록에 적습니다(2026-11-20 사용자 결정: 후속 이슈는 머지 뒤 코디네이터가 만듭니다)."
+  - "`read`의 목록 읽기(`a.md;b.md`) 부분별 기록 — #150."
+  - "`xd://apply_patch` 등 와이어 별칭 디바이스의 추적(2026-11-17 감사 U3)."
+  - "`xd://ast_edit` 본문 `paths`의 확장·검색 경로 분할(`resolveToolSearchScope`) — 8개 항목에 없는 기존 형태입니다. 계약 문서의 남은 간극에만 적습니다."
+  - "Windows 네이티브에서만 동작하는 확장(확장 길이 접두 `\\\\?\\`, MSYS `/c/…` 드라이브 별칭)의 미러 — 이 호스트에서 실측할 수 없습니다. 남은 간극에 적습니다."
+  - "`grep`·`ast_grep` 결과 경로(`details.files`·헤더)의 `..` 해석 변경 — 네이티브 검색 도구의 보고 형태를 실측하지 않았으므로 기존 `resolve`를 유지합니다."
+  - "`harness-friction`의 `references/harness-surface.md` 갱신 — 이슈 범위에 없습니다. PR 본문에 후속 관찰로만 적습니다."
+  - "`edit`의 `MV DEST` 대상 추적, `edit.citationTags`."
 assumptions:
-  - "시작 HEAD는 main d86a5e1(2026.91 범프)이고 `read-path.mjs`는 3dc461e 이후 변경이 없습니다."
-  - "설치된 omp는 18.22.0이며 실측은 이 버전의 `read`/`write` 도구로 했습니다."
-  - "성공한 로컬 단일 `read` 결과는 읽은 파일의 절대 경로를 싣습니다 — 일반 텍스트는 `details.meta.source`(type `path`), 쿼리·SQLite·이미지·아카이브·suffix 해석은 `details.resolvedPath`와 path 소스에(PDF 페이지는 소스가 렌더한 스크린샷, `resolvedPath`가 PDF). 목록 결과는 `details.displayReadTargets`로 표시됩니다. omp 18.22.0 소스(`readDetailsLinkPath`, `#readPdfPageScreenshot`)와 이 호스트의 최근 세션 기록을 최종 `readTarget`으로 재생해 확인했습니다(2026-11-20, 세션 파일 1,500개에서 입력과 짝지은 성공 read 결과 34,853건: path 소스 단일 읽기 27,115건 중 27,097건이 보고된 파일 그대로 기록되고 나머지 18건은 URL로 주소를 준 읽기라 기록 없음, 불일치 0건·예외 0건, details가 없는 결과 0건, 소스 정보가 전혀 없는 details 0건, 목록 99건과 path가 아닌 소스 7,605건은 기록 0건). JSON·PDF로 읽은 아카이브 멤버만 `<아카이브>:<멤버>`로 보고되고, 범위 밖 셀렉터 안내는 소스 없이 `resolvedPath`만 싣습니다(같은 재생에서 34건, 전부 'beyond end of file' 안내 — 내용을 보여 주지 않은 읽기)."
-  - "`v18.18.9`의 `parseXdUrl`은 확장 런타임 API라 node로 도는 `.mjs` 모듈·테스트에서 쓸 수 없어 스킴 allowlist를 유지합니다."
+  - "시작 HEAD는 main ea9a9c3(2026.92 범프)이고 `read-path.mjs`는 #109 머지(fcd6be1) 이후 변경이 없습니다."
+  - "설치된 omp는 18.22.0이며 실측은 이 버전의 `read`/`write` 도구를 확장 없이(`omp -p --no-session --no-extensions`) 돌려 했습니다. 소스는 태그 `v18.22.0`의 원본을 받아 읽었습니다."
+  - "omp 18.22.0의 확장 이벤트는 해시라인 `edit`의 `input.path`·`input.paths`를 헤더에서 뽑아 래퍼를 벗긴 형태로 싣고(`tool-event-input.ts` `normalizeToolEventInput`), replace/patch 모드의 `path`는 모델이 쓴 문자열 그대로 싣습니다. pi-edit `resolve`는 어느 쪽이든 `[path#TAG]`를 벗깁니다(소스 확인, 모드 전환 실측은 하지 않았습니다)."
+  - "하네스가 도는 플랫폼은 Linux·WSL·macOS입니다(통합 계약 Known residual surfaces의 Windows native 항목)."
 risks:
-  - "스킴 목록은 omp 버전에 묶여 있습니다 — 새 스킴은 유령 경로로 퇴화하므로 omp 업그레이드마다 재대조합니다. 셀렉터·컨테이너 확장자 목록은 details 없는 결과의 문법 해석에만 쓰입니다."
-  - "`readTarget`이 `existsSync`를 씁니다(보고된 `<아카이브>:<멤버>`를 아카이브로 줄일 때, 문법 폴백의 모호성 확인) — 모듈이 더는 순수 함수 층이 아닙니다(통합 계약 문서에 반영)."
-  - "읽기 추적은 omp 18.22.0의 결과 형태(`resolvedPath`·`meta.source`·`displayReadTargets`)에 묶여 있고 닫힌 쪽으로 실패합니다 — omp가 성공한 파일 읽기에 path 소스를 싣지 않게 바뀌면 읽기가 기록되지 않아 기존 파일의 edit/write가 모두 거짓 차단됩니다(읽지 않은 파일이 통과하는 방향은 아닙니다). omp 업그레이드 때 종단 테스트의 픽스처를 실제 결과와 다시 대조해야 합니다."
-  - "업스트림 splitter와의 알려진 차이 두 가지: `:-N+C` 상위집합(AC 요구 — 로컬 read는 업스트림에서 오류라 추적되지 않음), 문서에 없는 `N:M` 목록 병합 미반영(덜 벗기는 방향)."
-  - "목록 읽기 뒤의 edit/write는 여전히 거짓 차단됩니다(#109 이전과 같음) — #150이 닫힐 때까지 목록으로 읽은 파일은 단독으로 다시 읽어야 합니다."
-  - "이 세션에 로드된 확장은 옛 코드입니다 — 실제 게이트 동작은 핸들러 테스트로 검증하고, 새 세션부터 적용됩니다."
+  - "`write` 대상 해석이 디스크를 봅니다(아카이브·SQLite 후보의 존재와 종류, SQLite 헤더 16바이트, 절대 경로의 `..` 앞 realpath). 게이트 판정(tool_call)과 omp의 실제 쓰기 사이에 디스크가 바뀌면 어긋날 수 있습니다 — context-gate의 `existsSync`와 같은 종류의 창입니다."
+  - "쓰기 쪽 컨테이너 확장자 목록은 omp 버전에 묶여 있고 닫힌 쪽으로 실패하지 않습니다 — omp가 아카이브·SQLite 확장자를 더하면 그 확장자의 멤버 쓰기는 목록에 넣기 전까지 리터럴 문자열로 게이트됩니다(#152 이전의 간극이 그 확장자에 한해 남습니다)."
+  - "가상 주소 판정이 좁아져 모르는 스킴(`newdev://x`)은 로컬 파일 이름으로 판정됩니다. omp가 그런 `write`를 거부하므로 게이트는 쓰이지 않는 파일을 볼 뿐이지만, omp가 새 내부 스킴을 더하면 그 스킴의 쓰기 결과가 `<cwd>/newdev:/x` 유령 항목으로 장부에 남습니다(단일 슬래시 형태에 대해 이미 받아들인 방향)."
+  - "동작이 달라집니다: `pack.zip`과 실제 파일 `pack.zip:x`가 함께 있을 때 `write pack.zip:x`는 아카이브를 봅니다(실측과 일치). 읽지 않은 아카이브·DB에 멤버를 쓰려면 먼저 그 파일을 읽어야 합니다."
+  - "8번 삭제 경합이 남습니다(위 제약). 심각도 판정이 리뷰에서 갈렸던 항목입니다(#109 r7: adversary high / adversary-opus·primary low)."
+  - "이 세션에 로드된 확장은 옛 코드입니다 — 실제 게이트 동작은 핸들러 테스트와 중첩 세션(`omp -p --no-session`) 실측으로 검증하고, 새 세션부터 적용됩니다."
 references:
-  - path: https://github.com/rae-hugo-kim/pylon/issues/109
-    reason: 명세(F1~F4·AC·범위 밖)와 코디네이터 댓글 두 건(병합분·추가분), 결정 댓글 네 건
-  - path: https://github.com/rae-hugo-kim/pylon/issues/150
-    reason: 분리한 `;` 목록 지원
-  - path: docs/handoff/handoff_2026-10-16_omp-18-11-1-friction-audit.md
-    reason: §2 F1~F4 근거
-  - path: docs/handoff/handoff_2026-11-13_omp-18-18-6-friction-audit.md
-    reason: C2·C3·D5
-  - path: docs/handoff/handoff_2026-11-17_omp-18-22-0-friction-audit.md
-    reason: §5(아카이브 멤버 `?q=`, 기준 주소 이동); §1 C3(`;` 목록)은 #150
+  - path: https://github.com/rae-hugo-kim/pylon/issues/152
+    reason: 명세(항목 8건·범위·AC·범위 밖)
+  - path: https://github.com/rae-hugo-kim/pylon/pull/151
+    reason: "#109 PR 본문의 '범위 밖으로 남긴 기존 결함'과 리뷰 이력"
   - path: .omp/extensions/harness/gates/read-path.mjs
-    reason: readTarget(reportedTarget·grammarTarget)·READ_SELECTOR·컨테이너 확장자·writePath·URI_SCHEME_PREFIX·SEARCH_ANCHOR_HEADER
-  - path: .omp/extensions/harness/index.ts
-    reason: tool_result read 분기(details 전달)
+    reason: isVirtualPath·openedPath·localFileTarget·headerPaths·unwrapHeader·expandPath·wslMount·writeTarget·editTarget·editTargets·reportedTarget
   - path: .omp/extensions/harness/tests/read-path.test.mjs
-    reason: 항목별 회귀 테스트
+    reason: 항목별 단위 회귀 테스트("#152-1" ~ "#152-8")
   - path: .omp/extensions/harness/tests/read-ledger-wiring.test.mjs
-    reason: 실제 핸들러·게이트로 read-log와 context-gate 판정을 관측하는 종단 테스트
-  - path: .omp/extensions/harness/tests/read-selector-oracle.test.mjs
-    reason: 업스트림 splitPathAndSel 포팅본과 READ_SELECTOR의 차분 테스트(알려진 차이 두 부류만 허용)
+    reason: 실제 핸들러·게이트로 context-gate 판정과 read-log를 관측하는 종단 테스트("#152 AC1", "#152 AC2", "#152-4", "#152-1", "#152-6")
+  - path: .omp/extensions/harness/tests/state-origin.test.mjs
+    reason: 6번의 기존 재현 테스트("a path with a line break cannot write ledger lines of its own", #111)
   - path: .omp/rules/harness-harness_integration_contract.md
-    reason: 미러 서술·기준 버전(§1 Ledger path normalization, Helper modules)
+    reason: 원장 정규화 문단(§1 Ledger path normalization)과 그 안의 잔존면 서술
+  - path: CHANGELOG.md
+    reason: "[Unreleased] #152 항목"
 estimate:
   risk: high
-  files: 7
+  files: 9
   depth: high
   model: anthropic/claude-fable-5-2
   effort: high
