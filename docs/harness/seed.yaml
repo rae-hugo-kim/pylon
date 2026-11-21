@@ -1,21 +1,22 @@
 name: read-path-mutation-targets-152
 status: approved
-version: 1
+version: 2
 task_id: "20261121-235150-0dd2"
 # gh-loop worker Stage 2에 따라 이슈 #152 본문(항목 8건, 범위 3항, AC 4개, 범위 밖 2건)을 명세로 삼습니다.
 # 이슈 본문이 사용자 승인 명세이므로 처음부터 approved로 씁니다. 직전 완료 seed(read-path-remirror-109)는 git 이력에 보존합니다.
 goal: >
   #152: gates/read-path.mjs가 `write`·`edit` 대상을 입력 문자열이 아니라 omp 18.22.0이 실제로 여는 파일로
   해석하게 해, 읽지 않은 파일이 context-gate를 통과하던 경로(#109 리뷰에서 범위 밖으로 남긴 기존 결함 7건)를
-  막고, 삭제 경합 1건은 닫거나 근거를 붙여 잔존면으로 기록합니다.
+  막고, 삭제 경합 1건은 좁힌 뒤 남는 경우를 근거와 함께 잔존면으로 기록합니다.
 constraints:
   - "읽지 않은 파일을 읽은 것으로 기록하거나 실제로 바뀌는 파일을 게이트가 놓치는 방향이 유령 경로(거짓 차단)보다 나쁩니다. omp의 동작을 알 수 없는 형태는 닫힌 쪽(게이트 대상에 넣는 쪽)으로 둡니다."
   - "업스트림 동작은 추측하지 않고 문서(omp://tools/write.md), v18.22.0 소스(`packages/coding-agent/src/tools/{write,path-utils,conflict-detect,sqlite-reader}.ts`, `packages/coding-agent/src/internal-urls/router.ts`, `packages/utils/src/{path.ts,ar/open.ts,ar/registry.ts}`, `crates/pi-edit/src/path_policy.rs`, `packages/coding-agent/src/extensibility/tool-event-input.ts`), 실제 도구 실측으로 확인합니다."
   - "항목마다 재현 테스트를 먼저 쓰고(RED) 고치거나, 근거와 함께 잔존면으로 둡니다(이슈 범위 1)."
   - "1번은 omp `write`의 컨테이너 문법(`parseArchivePathCandidates`·`parseSqlitePathCandidates`와 `#resolveArchiveWritePath`·`#resolveSqliteWritePath`의 디스크 우선순위)을, 2번은 omp `expandPath`와 `resolveToCwd`를 기준으로 맞춥니다(이슈 범위 2)."
   - "`write`와 `edit`은 경로 해석이 다릅니다 — `write`는 TypeScript 라우터·`resolveToCwd`(절대 경로는 철자 그대로, WSL 드라이브 매핑, `local://` 접두 재작성, `<file>:conflict://N`), `edit`은 pi-edit `path_policy.rs`(모든 경로를 문자열로 접음, 두 재작성 없음, `file://`은 경로). 도구별로 따로 미러합니다."
-  - "omp `expandPath`와 같은 규칙을 pi-edit `expand_path`가 `edit`에 적용하므로, 2번의 확장은 `edit` 대상(직접 `path`·`paths`·패치 헤더)에도 같은 함수로 적용합니다. `write`만 고치면 `edit [@/abs/file.md#TAG]`가 같은 우회로 남습니다."
-  - "8번(삭제 경합)은 잔존면으로 둡니다. 멤버 읽기와 '읽은 뒤 지워진 실제 파일'은 핸들러에 같은 입력·같은 details·같은 디스크로 도착해 이벤트만으로 가를 수 없습니다. 닫는 방법은 `<archive>:<member>` 보고를 아카이브로 줄이지 않는 것뿐이고, 그러면 1번이 아카이브 쓰기를 아카이브 읽음에 묶기 때문에 JSON·PDF 멤버를 읽은 뒤 그 아카이브에 쓰는 흐름이 막힙니다(#109 AC5의 거짓 차단 복귀). 전제(아카이브 옆의 `<archive>:<member>` 이름 실제 파일 + 읽기와 핸들러 사이의 외부 삭제)가 좁아 그 대가를 치르지 않습니다."
+  - "`edit` 대상(직접 `path`·`paths`·패치 헤더)은 pi-edit의 `resolve`(`unwrap_hashline_header_path` → `address` → `expand_path` → `lexical_normalize`)를 따로 옮긴 함수로 풉니다. TypeScript `expandPath`를 그대로 쓰지 않습니다 — r1 리뷰가 둘이 갈리는 입력(`~//abs`, `~\\x`, `:.\\x`, `@C:x`, `file://`의 분류 순서, 꼬리 공백 U+FEFF·U+0085)에서 게이트가 없는 파일을 보고 `edit`이 읽지 않은 파일을 고치는 것을 보였습니다. `write`만 고치면 `edit [@/abs/file.md#TAG]`가 같은 우회로 남으므로 `edit`도 이 이슈에서 고칩니다."
+  - "`write`는 래퍼를 두 번 벗깁니다(라우팅 전 `write.ts`, 여는 경로마다 `resolvePlanPath`) — `write [[dbl.md]]`가 `dbl.md`를 덮어쓰는 것을 실측했고(r1 리뷰 지적), 두 번째 언래핑과 그 뒤의 URL 판정도 옮깁니다."
+  - "8번(삭제 경합)은 좁히고 남는 경우를 잔존면으로 둡니다. 실측: omp는 아카이브가 있으면 같은 이름의 실제 파일이 아니라 멤버를 읽고(멤버가 없으면 실패), 실제 파일의 평범한 읽기는 `resolvedPath` 없이 path 소스만 싣습니다. 그래서 아카이브로 줄이는 대상을 `resolvedPath`가 실린 결과로 한정합니다(멤버 읽기는 항상 싣습니다). 남는 경우는 아카이브가 없을 때 실제 파일을 `resolvedPath`가 실리는 방식(`?q=`)으로 읽고, 핸들러가 돌기 전에 아카이브가 생기고 그 파일이 지워지는 경우입니다. 이것까지 닫으려면 줄이기를 없애야 하고, 그러면 1번이 아카이브 쓰기를 아카이브 읽음에 묶기 때문에 JSON 쿼리·PDF 멤버를 읽은 뒤 그 아카이브에 쓰는 흐름이 막힙니다(#109 AC5의 거짓 차단 복귀)."
   - "통합 계약의 원장 정규화 문단과 그 안의 잔존면 서술을 결과에 맞게 고칩니다(이슈 범위 3). 같은 배치의 다른 워커가 `.omp/rules/harness-harness_integration_contract.md`·`docs/harness/audit.jsonl`·`CHANGELOG.md`를 함께 건드리므로 이 이슈 범위 밖의 줄은 고치지 않습니다."
   - "버전 범프·태그·머지·force-push는 하지 않습니다."
 acceptance_criteria:
@@ -24,7 +25,7 @@ acceptance_criteria:
   - id: AC2
     title: "`://`를 포함한 로컬 경로의 `write`가 게이트 대상이 됩니다(`notes/a://b.md` → `<cwd>/notes/a:/b.md`). omp가 URL로 다루는 형태만 가상 주소로 남고, 모르는 스킴은 그 문자열이 가리킬 파일로 판정합니다."
   - id: AC3
-    title: "4~8번 각각에 재현 테스트와 처리 결과가 있습니다 — 4(edit 직접 경로 래퍼)·5(헤더 줄 경계)·7(심볼릭 링크를 건넌 `..`)은 수정, 6(경로 안 개행)은 #111에서 닫힌 것을 핸들러 수준 테스트로 고정, 8(삭제 경합)은 근거가 붙은 잔존면 기록."
+    title: "4~8번 각각에 재현 테스트와 처리 결과가 있습니다 — 4(edit 직접 경로 래퍼)·5(헤더 줄 경계)·7(심볼릭 링크를 건넌 `..`)은 수정, 6(경로 안 개행)은 #111에서 닫힌 것을 핸들러 수준 테스트로 고정, 8(삭제 경합)은 `resolvedPath` 결과로 한정해 좁히고 남는 경우를 근거가 붙은 잔존면으로 기록."
   - id: AC4
     title: "`node --test .omp/extensions/harness/tests/*.test.mjs` 전 항목과 `node scripts/docs-drift`가 통과하고, `CHANGELOG.md` `[Unreleased]`와 통합 계약의 원장 정규화 문단이 결과를 반영합니다."
 out_of_scope:
@@ -45,7 +46,8 @@ risks:
   - "쓰기 쪽 컨테이너 확장자 목록은 omp 버전에 묶여 있고 닫힌 쪽으로 실패하지 않습니다 — omp가 아카이브·SQLite 확장자를 더하면 그 확장자의 멤버 쓰기는 목록에 넣기 전까지 리터럴 문자열로 게이트됩니다(#152 이전의 간극이 그 확장자에 한해 남습니다)."
   - "가상 주소 판정이 좁아져 모르는 스킴(`newdev://x`)은 로컬 파일 이름으로 판정됩니다. omp가 그런 `write`를 거부하므로 게이트는 쓰이지 않는 파일을 볼 뿐이지만, omp가 새 내부 스킴을 더하면 그 스킴의 쓰기 결과가 `<cwd>/newdev:/x` 유령 항목으로 장부에 남습니다(단일 슬래시 형태에 대해 이미 받아들인 방향)."
   - "동작이 달라집니다: `pack.zip`과 실제 파일 `pack.zip:x`가 함께 있을 때 `write pack.zip:x`는 아카이브를 봅니다(실측과 일치). 읽지 않은 아카이브·DB에 멤버를 쓰려면 먼저 그 파일을 읽어야 합니다."
-  - "8번 삭제 경합이 남습니다(위 제약). 심각도 판정이 리뷰에서 갈렸던 항목입니다(#109 r7: adversary high / adversary-opus·primary low)."
+  - "8번 삭제 경합의 좁힌 나머지가 남습니다(위 제약). 심각도 판정이 리뷰에서 갈렸던 항목입니다(#109 r7: adversary high / adversary-opus·primary low). 좁히기는 omp가 `<archive>:<member>` 보고에 항상 `resolvedPath`를 싣는다는 18.22.0의 형태에 묶여 있고, 그 형태가 사라지면 멤버 읽기가 유령 경로로 퇴화합니다(닫힌 쪽)."
+  - "`edit` 미러는 pi-edit 소스(`path_policy.rs`)를 읽어 옮긴 것이고 `edit` 도구로 실측하지 않았습니다(replace/patch 모드 전환과 해시라인 앵커가 필요). Rust `Path::join`·`trim_end`의 의미는 표준 라이브러리 정의에 따랐습니다."
   - "이 세션에 로드된 확장은 옛 코드입니다 — 실제 게이트 동작은 핸들러 테스트와 중첩 세션(`omp -p --no-session`) 실측으로 검증하고, 새 세션부터 적용됩니다."
 references:
   - path: https://github.com/rae-hugo-kim/pylon/issues/152
