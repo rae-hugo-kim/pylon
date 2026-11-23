@@ -1,5 +1,6 @@
 name: read-path-mutation-targets-152
-status: approved
+status: done
+completed: 2026-11-23
 version: 3
 task_id: "20261121-235150-0dd2"
 # gh-loop worker Stage 2에 따라 이슈 #152 본문(항목 8건, 범위 3항, AC 4개, 범위 밖 2건)을 명세로 삼습니다.
