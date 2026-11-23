@@ -11,7 +11,7 @@ import { join, resolve } from 'node:path';
 import { homedir } from 'node:os';
 import { mkdirSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import {
-  readTarget, localFileTarget, editTargets, mutationCallTargets, mutationRoute,
+  readTarget, localFileTarget, editTargets, mutationCallTargets, mutationRefusal, mutationRoute,
   READ_SELECTOR, resolvedAstEditFiles, searchTrackTargets,
 } from '../gates/read-path.mjs';
 import { mkdtempReal } from './helpers/real-tmpdir.mjs';
@@ -630,24 +630,31 @@ test('#152-2: under WSL a Windows drive path is the mounted file for write, a li
   assert.deepStrictEqual(W(drive), [resolve(CWD, drive)]);
 });
 
-// `write` removes a copied wrapper twice: once before routing (write.ts `execute`) and once more
-// for the path it opens (`resolvePlanPath`). Measured: `write [[dbl.md]]` overwrites `dbl.md`.
-// Nothing is refused after the second unwrap, and only a router URL is still a URL there.
-// Measured (r2 review): `write [[file:///…/victim.md]]` overwrites that file.
-test('#152-2: write unwraps the path it opens a second time', () => {
-  const foo = resolve(CWD, 'src/foo.ts');
-  assert.deepStrictEqual(W('[[src/foo.ts]]'), [foo]);
-  assert.deepStrictEqual(W('[[src/foo.ts#1A2B]#9f0e]'), [foo]);
-  assert.deepStrictEqual(W('[[@/abs/file.md]]'), ['/abs/file.md']);
-  assert.deepStrictEqual(W('[[[src/foo.ts]]]'), [resolve(CWD, '[src/foo.ts]')], 'twice, not more');
-  assert.deepStrictEqual(W('[[file:///abs/victim.md]]'), ['/abs/victim.md']);
-  assert.deepStrictEqual(W('[[FILE:///abs/a%20b.md]#1A2B]'), ['/abs/a b.md']);
-  assert.deepStrictEqual(W('[[xd:/x]]'), [resolve(CWD, 'xd:/x')], 'no router URL: a path');
-  assert.deepStrictEqual(W('[[https://h/x]]'), [resolve(CWD, 'https:/h/x')]);
-  // a router URL: omp locates its backing file, which this module cannot name
-  for (const p of ['[[local://plan.md]]', '[[local:/plan.md]]', '[[rule://x]]', '[[sub/local://plan.md]]', '[[@local://plan.md]]']) {
-    assert.deepStrictEqual(W(p), [], p);
+// #152 AC5 (user decision 2026-11-23). Two shapes of a `write` path do not say which file omp
+// opens, both measured on omp 18.22.0: behind a SECOND wrapper omp writes what it refuses at
+// the top level (`[[file:///…/victim.md]]` overwrote the file, `[[rule://zzprobe]]` the rule's
+// backing file), and a `file://` URL goes through Bun's URL parser, which Node's does not
+// match (`file:///a:b/../tmp/x`: Bun `/tmp/x`, Node `/a:b/tmp/x`). Such a call is refused.
+test('#152-9: a doubly wrapped or file:// write path is refused, never resolved', () => {
+  const refused = (path) => mutationRefusal('write', { path, content: 'x' });
+  for (const p of [
+    '[[src/foo.ts]]', '[[src/foo.ts#1A2B]#9f0e]', '[[src/foo.ts]] ', '[[[src/foo.ts]]]', '[[@/abs/file.md]]',
+    '[[file:///abs/victim.md]]', '[[file:///a:b/../tmp/victim.md]]', '[[rule://x]]', '[[local://plan.md]]', '[[xd://ast_edit]]', '[[x.tar:m]]',
+    'file:///abs/a%20b.md', 'FILE:///abs/x.md', 'file:///a:b/../tmp/victim.md', 'file:///tmp/vic\ntim.md', 'file://host/x', '[file:///abs/x.md#1A2B]',
+    'file:///abs/a.zip:m.txt', 'file:///abs/app.sqlite:users',
+  ]) {
+    assert.match(refused(p) ?? '', /^HARNESS BLOCK: write path .* — the harness cannot tell which file omp would open\./s, JSON.stringify(p));
+    assert.deepStrictEqual(W(p), [], `no file is named either: ${JSON.stringify(p)}`);
   }
+  assert.equal(mutationRefusal('write', { file_path: '[[src/foo.ts]]' }) === null, false, 'path aliases too');
+  // everything else is judged as before: one wrapper, plain and expanded paths, URLs, `edit`
+  for (const p of ['src/foo.ts', '[src/foo.ts#1A2B]', '[src/foo.ts]', '@/abs/file.md', 'arc.tar:member.json', '[a.zip]:m', 'xd://ast_edit', '[xd://ast_edit#1A2B]',
+    'local://plan.md', 'https://example.com/a', '@file:///abs/x.md', 'notes/file://x.md', '[src/foo.ts#9F0E1]', '']) {
+    assert.equal(refused(p), null, JSON.stringify(p));
+  }
+  assert.equal(mutationRefusal('write', {}), null);
+  assert.equal(mutationRefusal('edit', { path: '[[src/foo.ts]]' }), null, 'pi-edit unwraps once and reads file:// without a URL parser');
+  assert.equal(mutationRefusal('edit', { path: 'file:///abs/x.md' }), null);
 });
 
 // What omp refuses at the top level is judged as the file it would have opened; only what it
@@ -656,8 +663,8 @@ test('#152-3: a top-level write is a URL only where omp dispatches one', () => {
   for (const p of ['xd://resolve', 'xd:/retain', 'XD:/retain', 'cfg:/ns/key', 'local:/plan.md', 'skill://x/y.md']) {
     assert.deepStrictEqual(W(p), [], p);
   }
-  assert.deepStrictEqual(W('file:///abs/a%20b.md'), ['/abs/a b.md'], 'refused by omp; judged as the path it names');
   assert.deepStrictEqual(W('https://example.com/a'), [resolve(CWD, 'https:/example.com/a')]);
+  assert.deepStrictEqual(W('@file:///abs/x.md'), [resolve(CWD, '@file:/abs/x.md')], 'behind an @ it is no file:// URL to omp either');
   // omp refuses `scheme:/…` on ONE line only: with a line break the string is a file name
   assert.deepStrictEqual(W('xd:/x\ny'), [resolve(CWD, 'xd:/x\ny')]);
 });
@@ -696,12 +703,13 @@ test('#152-2: edit follows pi-edit where it differs from write', () => {
     // `@` goes before any drive prefix; `write` wants a Windows ABSOLUTE path
     ['@C:foo', resolve(CWD, 'C:foo'), resolve(CWD, '@C:foo')],
     // `file://` is a path, classified before it is decoded, and decoded by pi-edit's own decoder
-    // (`%+1` is a byte there); `write` goes through `fileURLToPath`
-    ['file:///abs/a%20b.md', '/abs/a b.md', '/abs/a b.md'],
-    ['file://xd://x', resolve(CWD, 'xd:/x'), resolve(CWD, 'file:/xd:/x')],
-    ['file://bad%ZZ', resolve(CWD, 'file:/bad%ZZ'), resolve(CWD, 'file:/bad%ZZ')],
-    ['file:///tmp/%+1/../victim.md', '/tmp/victim.md', '/tmp/victim.md'],
-    ['file:///tmp/%C3%A9.md', '/tmp/\u00e9.md', '/tmp/\u00e9.md'],
+    // (`%+1` is a byte there); a `write` of that shape is refused (#152-9)
+    ['file:///abs/a%20b.md', '/abs/a b.md', null],
+    ['file://xd://x', resolve(CWD, 'xd:/x'), null],
+    ['file://bad%ZZ', resolve(CWD, 'file:/bad%ZZ'), null],
+    ['file:///tmp/%+1/../victim.md', '/tmp/victim.md', null],
+    ['file:///tmp/%C3%A9.md', '/tmp/\u00e9.md', null],
+    ['file:///a:b/../tmp/victim.md', '/tmp/victim.md', null],
     ['@file:///abs/x.md', resolve(CWD, '@file:/abs/x.md'), resolve(CWD, '@file:/abs/x.md')],
     // trailing whitespace before the wrapper test: U+FEFF is JavaScript's only, U+0085 Rust's only
     ['[victim.txt]\uFEFF', resolve(CWD, '[victim.txt]\uFEFF'), resolve(CWD, 'victim.txt')],
@@ -710,7 +718,7 @@ test('#152-2: edit follows pi-edit where it differs from write', () => {
     ['\\\\?\\C:\\x.md', resolve(CWD, 'C:\\x.md'), resolve(CWD, '\\\\?\\C:\\x.md')],
   ]) {
     assert.deepStrictEqual(E({ path: p }), [edited], `edit ${JSON.stringify(p)}`);
-    assert.deepStrictEqual(W(p), [written], `write ${JSON.stringify(p)}`);
+    assert.deepStrictEqual(W(p), written === null ? [] : [written], `write ${JSON.stringify(p)}`);
   }
   // the single-slash spelling of a known scheme is refused by pi-edit: no file
   assert.deepStrictEqual(E({ path: 'file:/abs/x.md' }), []);

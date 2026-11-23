@@ -5,7 +5,8 @@
 // Event mapping (Claude Code -> OMP):
 //   PreToolUse  Edit|Write   -> tool_call  edit|write            : cross-repo guard (blocking, in-process — #15 ①:
 //     a target in another repo needs that repo's discipline file in the read ledger) then context-gate (blocking; an
-//     xd://ast_edit device write pre-gates the paths named in its JSON body — read-before-edit holds)
+//     xd://ast_edit device write pre-gates the paths named in its JSON body — read-before-edit holds). A `write` whose
+//     path does not say which file omp opens (a second [path] wrapper, a file:// URL) is refused first (#152)
 //   PreToolUse  Bash         -> tool_call  bash                 : destructive-guard (advisory), commit-tripwire + cross-repo guard
 //     (blocking, in-process — #15 ②: commit/push into another discipline-bearing repo or an unresolvable target)
 //   PreToolUse  mcp__*       -> tool_call  mcp__*               : mcp-gate (advisory)
@@ -48,7 +49,7 @@ import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { absolutize, commitBypassTripwire, commitTargetDir, isGitCommit, isWipCommit, verificationCwd } from "./gates/git-commit-detect.mjs";
 import { crossRepoBashVerdict, crossRepoMutationVerdict } from "./gates/cross-repo.mjs";
-import { mutationCallTargets, mutationRoute, readTarget, searchTrackTargets } from "./gates/read-path.mjs";
+import { mutationCallTargets, mutationRefusal, mutationRoute, readTarget, searchTrackTargets } from "./gates/read-path.mjs";
 import { repoToplevel } from "./gates/repo-root.mjs";
 import { checkMermaidFile, MERMAID_SUPPORTED } from "./mermaid-check";
 
@@ -591,6 +592,9 @@ export default function harness(pi: HarnessExtensionApi): void {
 		try {
 			const session_state = { cwd: ctx.cwd };
 			if (isEditToolName(event.toolName)) {
+				// #152: where the file cannot be told from the path, the call is refused, not guessed.
+				const refusal = mutationRefusal(event.toolName, event.input);
+				if (refusal) return { block: true, reason: refusal };
 				for (const filePath of mutationCallTargets(event.toolName, event.input, ctx.cwd)) {
 					// Cross-repo guard (#15 ①) runs before read-before-edit: a file in another repo
 					// needs that repo's AGENTS.md in the read ledger, not just the file itself.

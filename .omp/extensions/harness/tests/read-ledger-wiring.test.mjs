@@ -189,3 +189,20 @@ test('#152-6: a reported path containing a line break records nothing', async (t
   assert.deepEqual(readLog(root), []);
   assert.equal(await blocked(root, 'write', { path: 'b.md', content: 'x' }), true);
 });
+
+// #152 AC5: these shapes are refused at tool_call whatever the ledger holds — reading the
+// file does not unlock them, and a file that does not exist yet does not either.
+test('#152 AC5: a doubly wrapped or file:// write is blocked at tool_call, read or not', async (t) => {
+  const root = session(t, ['src/foo.ts', '.omp/rules/zz.md']);
+  const paths = ['[[src/foo.ts]]', `[[file://${join(root, 'src/foo.ts')}]]`, `file://${join(root, 'src/foo.ts')}`, '[[file:///a:b/../tmp/victim.md]]', '[[rule://zz]]', '[[src/new.ts]]'];
+  await read(root, 'src/foo.ts', 'src/foo.ts');
+  for (const path of paths) {
+    const verdict = await call({ toolName: 'write', input: { path, content: 'x' } }, ctxFor(root));
+    assert.equal(verdict?.block, true, JSON.stringify(path));
+    assert.match(verdict.reason, /^HARNESS BLOCK: write path .*cannot tell which file omp would open/s, JSON.stringify(path));
+  }
+  // the same file through one wrapper or as a plain path is judged by the ledger, as before
+  assert.equal(await blocked(root, 'write', { path: '[src/foo.ts#1A2B]', content: 'x' }), false);
+  assert.equal(await blocked(root, 'write', { path: 'src/foo.ts', content: 'x' }), false);
+  assert.equal(await blocked(root, 'edit', { path: '[[src/new.ts]]' }), false, 'edit is not refused: pi-edit unwraps once');
+});

@@ -7,7 +7,8 @@
 // an edit, the file the tool opens for the path the model authored — hashline
 // wrapper removed, `@` / `~` shorthand expanded, an archive or SQLite member reduced
 // to its container (#152). Web URLs / internal URIs — not local files worth
-// tracking — yield nothing.
+// tracking — yield nothing, and a `write` path whose file cannot be told without
+// guessing (a second wrapper, a `file://` URL) is refused outright (`mutationRefusal`).
 //
 // The two failure directions are not symmetric. A form omp accepts that is left
 // unstripped logs a phantom path (e.g. "foo.ts:raw"), so a later edit of "foo.ts"
@@ -32,7 +33,6 @@
 import { closeSync, existsSync, lstatSync, openSync, readSync, realpathSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, isAbsolute, join, parse, posix, resolve, sep, win32 } from "node:path";
-import { fileURLToPath } from "node:url";
 
 // Line selector grammar (splitPathAndSel, case-insensitive):
 //   :raw   :conflicts   :img        (standalone; :img — SVG/SVGZ as PNG, 18.2.9+)
@@ -178,15 +178,16 @@ function openedPath(p, cwd) {
  *  names nothing on disk; when both exist (`pack.zip` next to a real file named
  *  `pack.zip:x.json`), or several archives do, nothing is recorded.
  *
- *  The reduction trusts the disk at handler time (#152 item 8, kept as a residual). omp
- *  reads a literal file named `<archive>:<member>` only while that archive does NOT
- *  exist — beside the archive it reads the member, or fails when there is none
- *  (measured). A read of the literal file is therefore mistaken for a member read only if
- *  it carried `resolvedPath` (a `?q=` query read: same details as a member read,
- *  measured) AND, before the handler ran, the archive appeared and the literal file was
- *  deleted. A plain read of the literal file carries no `resolvedPath` and never comes
- *  here (`readTarget`). Refusing the reduction altogether would close the rest, at the
- *  price of a member read no longer unlocking the `write` into that archive. */
+ *  The reduction trusts the disk at handler time (#152 item 8, kept as a residual). A
+ *  plain read of a literal file named `<archive>:<member>` carries no `resolvedPath` and
+ *  never comes here (`readTarget`), and beside the archive omp reads the member instead,
+ *  or fails when there is none (measured). What is left is a read of such a literal file
+ *  that does carry `resolvedPath` — a `?q=` query read while the archive does not exist,
+ *  or a literal file that is itself an archive (`a.zip:b.zip`), which omp opens first
+ *  even beside `a.zip` (both measured: same details as a member read) — when, before the
+ *  handler runs, the literal file is deleted and exactly one archive prefix is on disk.
+ *  Refusing the reduction altogether would close that too, at the price of a member read
+ *  no longer unlocking the `write` into that archive. */
 function reportedTarget(reported, cwd) {
 	const self = localFileTarget(reported, cwd);
 	if (!self) return null;
@@ -462,18 +463,14 @@ function writePath(input) {
  *  of `expandPath` (v18.22.0 packages/coding-agent/src/tools/path-utils.ts), used here
  *  for `write` targets and for the URL test on a `read` input. A stray leading `:` before
  *  a path shape is dropped; so is a leading `@` mention marker before `/`, `~`, a Windows
- *  absolute path or a router URL; Unicode spaces become plain spaces; a `file://` URL
- *  becomes its path when `fileURLToPath` accepts it; a leading `~` is the home directory,
- *  the rest appended as text (`~//x` is `<home>//x`), and `~name` is `<home>/name`.
- *  Unmirrored, `write @/abs/file.md` was gated as `<cwd>/@/abs/file.md`, which does not
- *  exist, and the unread `/abs/file.md` was overwritten (measured, #152 item 2). `edit`
- *  has its own rules: `editTarget`.
- *  omp runs `fileURLToPath` on Bun, this module on Node. The two agreed on a 24-input
- *  probe (Bun 1.4.4, Node 24: hosts, bad escapes, `..`, line breaks, `?` / `#` tails)
- *  except for an escape that is not UTF-8, where Bun returns an empty path — omp then
- *  writes nothing — and Node throws.
- *  Not mirrored: the parts that act on native Windows only (extended-length `\\?\`
- *  prefixes, MSYS `/c/…` drive aliases). */
+ *  absolute path or a router URL; Unicode spaces become plain spaces; a leading `~` is
+ *  the home directory, the rest appended as text (`~//x` is `<home>//x`), and `~name` is
+ *  `<home>/name`. Unmirrored, `write @/abs/file.md` was gated as `<cwd>/@/abs/file.md`,
+ *  which does not exist, and the unread `/abs/file.md` was overwritten (measured, #152
+ *  item 2). `edit` has its own rules: `editTarget`.
+ *  Not mirrored: `file://` (omp turns it into a path with its runtime's URL parser; a
+ *  `write` path of that shape is refused, see `unresolvableWrite`) and the parts that act
+ *  on native Windows only (extended-length `\\?\` prefixes, MSYS `/c/…` drive aliases). */
 const UNICODE_SPACES = /[\u00A0\u2000-\u200A\u202F\u205F\u3000]/g;
 function expandPath(path) {
 	let p = /^:(?=[/\\~]|\.\.?[/\\]|[A-Za-z]:)/.test(path) ? path.slice(1) : path;
@@ -482,13 +479,6 @@ function expandPath(path) {
 		if (rest[0] === "/" || rest === "~" || rest.startsWith("~/") || win32.isAbsolute(rest) || routedUrl(rest)) p = rest;
 	}
 	p = p.replace(UNICODE_SPACES, " ");
-	if (/^file:\/\//i.test(p)) {
-		try {
-			p = fileURLToPath(p);
-		} catch {
-			// not a file URL with a local path: omp keeps the string as it stands
-		}
-	}
 	if (p === "~") return homedir();
 	if (p.startsWith("~/") || p.startsWith("~\\")) return homedir() + p.slice(1);
 	return p[0] === "~" ? join(homedir(), p.slice(1)) : p;
@@ -518,6 +508,24 @@ function isSqlite(path) {
 	}
 }
 
+/** Why the file a `write` to `path` (wrapper already removed once) opens cannot be told
+ *  from the string, or null. Two shapes, both measured on omp 18.22.0:
+ *    - a second wrapper. omp unwraps once before it routes the target and once more for
+ *      the path it opens (`resolvePlanPath`), and what it refuses at the top level it
+ *      writes behind the second wrapper: `write [[rule://x]]` overwrites the read-only
+ *      scheme's backing file `.omp/rules/x.md`, which this module cannot name;
+ *    - a `file://` URL, which omp turns into a path with Bun's URL parser. Node's parser
+ *      reads `file:///a:b/../tmp/x` as `/a:b/tmp/x` where Bun reads `/tmp/x`, and a
+ *      malformed escape throws in one and stays text in the other. omp refuses a
+ *      top-level `file://` on one line only, and not at all behind a second wrapper.
+ *  Mirroring these went wrong twice (#152 reviews r2 and r4), so such a call is refused
+ *  instead (user decision 2026-11-23): `mutationRefusal` blocks it at tool_call, and
+ *  `writeTarget` names no file for it. */
+function unresolvableWrite(path) {
+	if (unwrapHeader(path) !== path) return "is wrapped in [ ] twice";
+	return /^file:\/\//i.test(path) ? "is a file:// URL" : null;
+}
+
 /** File a `write` to `path` (wrapper already removed once) creates or replaces; null
  *  when it writes no local file this module can name. omp decides in this order
  *  (write.ts `execute`):
@@ -532,26 +540,21 @@ function isSqlite(path) {
  *       existing SQLite file — unless an existing prefix is some other kind of file,
  *       which makes the whole string a plain file name;
  *    4. anything else is a plain file.
- *  Every path it then opens — the plain file, each candidate — goes through
- *  `resolvePlanPath` (`file` below): a hashline wrapper comes off AGAIN, a router URL is
- *  located by its handler (a backing file this module cannot name: null), and anything
- *  else is expanded as a path. Nothing is refused at that point, so behind a second
- *  wrapper `file://`, `https://` and `xd:/x` are paths: `write [[file:///abs/x.md]]`
- *  overwrites `/abs/x.md` and `write [[src/foo.ts]]` overwrites `src/foo.ts` (both
- *  measured). Gated as the literal string, `arc.tar:member.json` named a file that does
- *  not exist, so an unread `arc.tar` was rewritten (measured, #152 item 1).
+ *  Every path it then opens — the plain file, each candidate — is expanded and resolved
+ *  by `resolvePlanPath` (`file` below; the second unwrap it also does never applies
+ *  here: `unresolvableWrite` has turned a wrapped path away, and a candidate ends in its
+ *  extension, never in `]`). Gated as the literal string, `arc.tar:member.json` named a
+ *  file that does not exist, so an unread `arc.tar` was rewritten (measured, #152 item 1).
  *  The disk is consulted the way omp consults it. What omp refuses is judged as the file
- *  it WOULD have opened — a top-level `file:///abs/x` or `pkg://x`, a read-only archive
- *  format, a missing database, a special file, a `?query`: the gate then judges a file
- *  nothing is written to, never a file other than the one written. */
+ *  it WOULD have opened — `pkg://x`, `https://x`, a read-only archive format, a missing
+ *  database, a special file, a `?query`: the gate then judges a file nothing is written
+ *  to, never a file other than the one written. */
 const EVENT_URL = new RegExp(`^(?:${INTERNAL_SCHEMES}):/.*$`, "i");
 function writeTarget(path, cwd) {
-	if (typeof path !== "string" || path.length === 0) return null;
+	if (typeof path !== "string" || path.length === 0 || unresolvableWrite(path)) return null;
 	if (routedUrl(path) || EVENT_URL.test(path) || PREFIXED_CONFLICT_URL.test(path)) return null;
 	const file = (p) => {
-		const inner = unwrapHeader(p);
-		if (routedUrl(inner)) return null;
-		const expanded = wslMount(expandPath(inner));
+		const expanded = wslMount(expandPath(p));
 		// `@local://x` is a URL once the `@` is off: omp throws, nothing is written
 		return routedUrl(expanded) ? null : openedPath(expanded, cwd);
 	};
@@ -585,7 +588,7 @@ function percentDecode(value) {
 			continue;
 		}
 		const pair = bytes.toString("latin1", i + 1, i + 3);
-		if (i + 2 >= bytes.length || !/^[+0-9A-Fa-f][0-9A-Fa-f]$/.test(pair)) return null;
+		if (!/^[+0-9A-Fa-f][0-9A-Fa-f]$/.test(pair)) return null;
 		out.push(Number.parseInt(pair.replace("+", "0"), 16));
 		i += 2;
 	}
@@ -616,10 +619,12 @@ function percentDecode(value) {
  *      of slashes only is the cwd. A path that expands to nothing names no file.
  *  Taken as the literal string, a direct path `[src/foo.ts#1A2B]` named a file that does
  *  not exist and an unread `src/foo.ts` was edited (#152 item 4). */
-const RUST_TRAILING_WHITESPACE = /[\t-\r \u0085\u00A0\u1680\u2000-\u200A\u2028\u2029\u202F\u205F\u3000]+$/;
+const RUST_WHITESPACE = /[\t-\r \u0085\u00A0\u1680\u2000-\u200A\u2028\u2029\u202F\u205F\u3000]/;
 function editTarget(path, cwd) {
 	if (typeof path !== "string") return null;
-	const display = unwrapHeader(path, path.replace(RUST_TRAILING_WHITESPACE, ""));
+	let end = path.length;
+	while (end > 0 && RUST_WHITESPACE.test(path[end - 1])) end--;
+	const display = unwrapHeader(path, path.slice(0, end));
 	const address = display[0] === "@" ? display.slice(1) : display;
 	if (URI_SCHEME_PREFIX.test(address) && !/^file:\/\//i.test(address)) return null;
 	let p = /^:(?:[/\\~]|\.\.?\/|[A-Za-z]:)/.test(display) ? display.slice(1) : display;
@@ -681,6 +686,17 @@ export function editTargets(toolName, input, cwd) {
  *  fall through to editTargets, whose URI guard DROPPED the path — silently
  *  skipping read-before-edit for the device's body paths). */
 const AST_EDIT_DEVICE = /^xd:\/{1,2}ast_edit$/i;
+
+/** Reason a mutating call must be refused before any file is judged, or null: a
+ *  `write` whose path does not say which file omp would open (`unresolvableWrite`).
+ *  index.ts blocks the call with this text at tool_call; it quotes the path as authored. */
+export function mutationRefusal(toolName, input) {
+	const path = toolName === "write" ? writePath(input) : null;
+	const why = typeof path === "string" ? unresolvableWrite(path) : null;
+	if (!why) return null;
+	const authored = JSON.stringify(String(input.path ?? input.file_path ?? input.filePath).slice(0, 200));
+	return `HARNESS BLOCK: write path ${authored} ${why} — the harness cannot tell which file omp would open. Pass the plain path.`;
+}
 
 export function mutationCallTargets(toolName, input, cwd) {
 	const rawPath = writePath(input);
