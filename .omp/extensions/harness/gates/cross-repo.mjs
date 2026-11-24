@@ -17,8 +17,9 @@
 //     the sanctioned path is a session whose cwd is that repo. A repo with neither (the sum
 //     skill's private vault, `git -C <vault> commit`) stays out of jurisdiction and passes,
 //     matching harness_integration_contract "Out-of-jurisdiction repos". A commit/push whose
-//     target cannot be resolved statically (`cd "$DIR"`, `pushd`, `eval`, `env -C`, GIT_DIR=…)
-//     is BLOCKED too — fail-closed, the review-gate UNVERIFIABLE bias.
+//     target cannot be resolved statically (`cd "$DIR"`, `pushd`, `eval`, `env -C`, GIT_DIR=…,
+//     a cwd shifter behind `time`, a relative `cd` while CDPATH is set — #149) is BLOCKED too —
+//     fail-closed, the review-gate UNVERIFIABLE bias.
 //
 // Repo identity is the physical common git dir (repo-root.mjs): a linked worktree of the session
 // repo (an Orca card, `git worktree add`) is the SAME repo and never trips either rail.
@@ -111,7 +112,7 @@ export function crossRepoBashVerdict({ command, toolCwd, sessionCwd, env }) {
     return {
       block: [
         `HARNESS BLOCK: cannot resolve which repo this git commit/push targets (${unknown}) — failing closed (#15 ②).`,
-        'Spell the target literally so the guard can attribute it: `git commit …` in the session repo, `git -C <dir> commit …`, or ONE `cd <existing-dir> && git commit …` per call (a second cd, a cd into a directory that does not exist yet, a subshell, eval/pushd, or a `$VAR` path cannot be followed). A commit into another repo must run from a session whose cwd is that repo.',
+        'Spell the target literally so the guard can attribute it: `git commit …` in the session repo, `git -C <dir> commit …`, or ONE `cd <existing-dir> && git commit …` per call (a second cd, a cd into a directory that does not exist yet, a cd behind `time`, a relative cd while CDPATH is set — write `cd ./<dir>` —, a subshell, eval/pushd, or a `$VAR` path cannot be followed). A commit into another repo must run from a session whose cwd is that repo.',
       ].join('\n'),
     };
   }
