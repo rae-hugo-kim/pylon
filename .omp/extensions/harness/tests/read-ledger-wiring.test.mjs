@@ -98,7 +98,10 @@ test('reading an archive member does not mark a look-alike literal file as read'
   const root = session(t, ['pack.zip', 'pack.zip:x']);
   await readResolved(root, 'pack.zip:x', 'pack.zip'); // with pack.zip present, omp opens the archive
   assert.deepEqual(readLog(root), [join(root, 'pack.zip')]);
-  assert.equal(await blocked(root, 'write', { path: 'pack.zip:x', content: 'x' }), true, 'the literal file pack.zip:x was never read');
+  // `write pack.zip:x` rewrites the ARCHIVE even beside a literal file of that name (measured,
+  // #152); the literal file is what `edit` addresses, and it was never read
+  assert.equal(await blocked(root, 'write', { path: 'pack.zip:x', content: 'x' }), false, 'the archive that write rewrites was read');
+  assert.equal(await blocked(root, 'edit', { path: 'pack.zip:x' }), true, 'the literal file pack.zip:x was never read');
 });
 
 // r6 review: guessing the file from the input is confined to a result WITHOUT details. Details
@@ -143,4 +146,63 @@ test('a wrapper write is recorded under the real file, so the next edit is not f
   await result({ toolName: 'write', input: { path: '[src/new.ts#1A2B]', content: 'x\n' }, isError: false }, ctxFor(root));
   assert.ok(readLog(root).includes(join(root, 'src', 'new.ts')), JSON.stringify(readLog(root)));
   assert.equal(await blocked(root, 'edit', { path: 'src/new.ts' }), false);
+});
+
+// ── #152: the mutation targets end to end — the real handlers, the real context-gate. ──────
+test('#152 AC1: a write into an unread archive, or through an @-path, is blocked until the file is read', async (t) => {
+  const root = session(t, ['arc.tar', 'abs/file.md']);
+  const mention = `@${join(root, 'abs/file.md')}`;
+  assert.equal(await blocked(root, 'write', { path: 'arc.tar:member.json', content: '{}' }), true, 'arc.tar was never read');
+  assert.equal(await blocked(root, 'write', { path: mention, content: 'x' }), true, 'abs/file.md was never read');
+  await read(root, 'arc.tar', 'arc.tar');
+  await read(root, 'abs/file.md', 'abs/file.md');
+  assert.equal(await blocked(root, 'write', { path: 'arc.tar:member.json', content: '{}' }), false);
+  assert.equal(await blocked(root, 'write', { path: mention, content: 'x' }), false);
+});
+
+test('#152 AC2: a local path containing :// is gated as the file it names', async (t) => {
+  const root = session(t, ['notes/a:/b.md']);
+  assert.equal(await blocked(root, 'write', { path: 'notes/a://b.md', content: 'x' }), true);
+  assert.equal(await blocked(root, 'edit', { path: 'notes/a://b.md' }), true);
+  await read(root, 'notes/a://b.md', 'notes/a:/b.md');
+  assert.equal(await blocked(root, 'write', { path: 'notes/a://b.md', content: 'x' }), false);
+});
+
+test('#152-4: an edit whose direct path is a copied [path#TAG] wrapper is gated as the real file', async (t) => {
+  const root = session(t, ['src/foo.ts']);
+  assert.equal(await blocked(root, 'edit', { path: '[src/foo.ts#1A2B]' }), true);
+  await read(root, 'src/foo.ts', 'src/foo.ts');
+  assert.equal(await blocked(root, 'edit', { path: '[src/foo.ts#1A2B]' }), false);
+});
+
+test('#152-1: an archive member write is recorded under the archive', async (t) => {
+  const root = session(t, ['arc.tar']); // the write tool has just created or rewritten it
+  await result({ toolName: 'write', input: { path: 'arc.tar:member.json', content: '{}' }, isError: false }, ctxFor(root));
+  assert.deepEqual(readLog(root), [join(root, 'arc.tar')]);
+});
+
+// #152-6: closed by #111 (state-origin `recordReads`) — a reported path with a line break used
+// to add read-log lines of its own. Pinned here at the handler level.
+test('#152-6: a reported path containing a line break records nothing', async (t) => {
+  const root = session(t, ['a.md', 'b.md']);
+  await readEvent(root, 'a.md', { meta: { source: { type: 'path', value: `${join(root, 'a.md')}\n${join(root, 'b.md')}` } } });
+  assert.deepEqual(readLog(root), []);
+  assert.equal(await blocked(root, 'write', { path: 'b.md', content: 'x' }), true);
+});
+
+// #152 AC5: these shapes are refused at tool_call whatever the ledger holds — reading the
+// file does not unlock them, and a file that does not exist yet does not either.
+test('#152 AC5: a doubly wrapped or file:// write is blocked at tool_call, read or not', async (t) => {
+  const root = session(t, ['src/foo.ts', '.omp/rules/zz.md']);
+  const paths = ['[[src/foo.ts]]', `[[file://${join(root, 'src/foo.ts')}]]`, `file://${join(root, 'src/foo.ts')}`, '[[file:///a:b/../tmp/victim.md]]', '[[rule://zz]]', '[[src/new.ts]]'];
+  await read(root, 'src/foo.ts', 'src/foo.ts');
+  for (const path of paths) {
+    const verdict = await call({ toolName: 'write', input: { path, content: 'x' } }, ctxFor(root));
+    assert.equal(verdict?.block, true, JSON.stringify(path));
+    assert.match(verdict.reason, /^HARNESS BLOCK: write path .*cannot tell which file omp would open/s, JSON.stringify(path));
+  }
+  // the same file through one wrapper or as a plain path is judged by the ledger, as before
+  assert.equal(await blocked(root, 'write', { path: '[src/foo.ts#1A2B]', content: 'x' }), false);
+  assert.equal(await blocked(root, 'write', { path: 'src/foo.ts', content: 'x' }), false);
+  assert.equal(await blocked(root, 'edit', { path: '[[src/new.ts]]' }), false, 'edit is not refused: pi-edit unwraps once');
 });

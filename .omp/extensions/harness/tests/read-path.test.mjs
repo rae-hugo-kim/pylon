@@ -8,9 +8,10 @@
 import test from 'node:test';
 import assert from 'node:assert';
 import { join, resolve } from 'node:path';
-import { mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { homedir } from 'node:os';
+import { mkdirSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import {
-  readTarget, localFileTarget, editTargets, mutationCallTargets, mutationRoute,
+  readTarget, localFileTarget, editTargets, mutationCallTargets, mutationRefusal, mutationRoute,
   READ_SELECTOR, resolvedAstEditFiles, searchTrackTargets,
 } from '../gates/read-path.mjs';
 import { mkdtempReal } from './helpers/real-tmpdir.mjs';
@@ -537,4 +538,283 @@ test('#109 fallback: when a longer reading exists on disk, nothing is recorded',
   // r7 review: a longer reading that ends at a `?` with no later `:` — the scan must stop there too
   const pics = tree(t, ['pic', 'pic?v2.png']);
   assert.equal(readTarget({ path: 'pic?v2.png?q=describe' }, undefined, pics), '', 'the literal pic?v2.png is a longer reading than pic');
+});
+
+// ── #152: what a `write` / `edit` call really touches. Mirrors omp 18.22.0 `write.ts`
+// (`#resolveArchiveWritePath`, `#resolveSqliteWritePath`, `assertWriteTargetAddressable`),
+// `path-utils.ts` (`expandPath`, `resolveToCwd`), the router's `normalize`, and pi-edit's
+// `path_policy.rs` (`resolve`, `address`, `expand_path`). "measured" = run against the live
+// tools on 18.22.0 (2026-11-21). ─────────────────────────────────────────────────────────────
+const W = (path, cwd = CWD) => editTargets('write', { path }, cwd);
+const E = (input, cwd = CWD) => editTargets('edit', input, cwd);
+
+test('#152-1: a write to an archive member targets the archive (measured: arc.tar is what changes)', (t) => {
+  const arc = resolve(CWD, 'arc.tar');
+  assert.deepStrictEqual(W('arc.tar:member.json'), [arc]);
+  assert.deepStrictEqual(W('build/assets.tar.gz:css/app.css'), [resolve(CWD, 'build/assets.tar.gz')]);
+  assert.deepStrictEqual(W('pkg.JAR:META-INF/x'), [resolve(CWD, 'pkg.JAR')]);
+  assert.deepStrictEqual(W('old.7z:m.txt'), [resolve(CWD, 'old.7z')], 'omp refuses a read-only format; the gate still names the archive');
+  assert.deepStrictEqual(W('[arc.tar:member.json#1A2B]'), [arc], 'the wrapper comes off first');
+  assert.deepStrictEqual(W('arc.tar'), [arc], 'no member: the archive file itself is overwritten');
+  assert.deepStrictEqual(W('notes.tar.md:x'), [resolve(CWD, 'notes.tar.md:x')], 'the extension must end at the colon');
+  // the gate (tool_call) and the ledger (tool_result) see the same file
+  assert.deepStrictEqual(mutationCallTargets('write', { path: 'arc.tar:member.json', content: '{}' }, CWD), [arc]);
+  assert.deepStrictEqual(mutationRoute('write', { path: 'arc.tar:member.json', content: '{}' }, undefined, '', CWD), { kind: 'files', files: [arc] });
+  // several candidates: the longest existing FILE wins, a directory is skipped, and when none
+  // exists the shortest is the archive omp would create
+  const root = tree(t, ['a.zip', 'a.zip:b.zip', 'only.zip:inner.zip', 'd.zip', 'd.zip:e.zip/keep.txt']);
+  assert.deepStrictEqual(W('a.zip:b.zip:c.txt', root), [join(root, 'a.zip:b.zip')]);
+  assert.deepStrictEqual(W('only.zip:inner.zip:c.txt', root), [join(root, 'only.zip:inner.zip')]);
+  assert.deepStrictEqual(W('d.zip:e.zip:c.txt', root), [join(root, 'd.zip')]);
+  assert.deepStrictEqual(W('x.zip:y.zip:c.txt', root), [join(root, 'x.zip')]);
+});
+
+test('#152-1: a write to a SQLite row targets the database omp opens', (t) => {
+  assert.deepStrictEqual(W('db.sqlite:users'), [resolve(CWD, 'db.sqlite')], 'a missing database: omp refuses the write');
+  const root = tree(t, ['notes.db', 'notes.db:users', 'fake.db3', 'd.db/keep.txt']);
+  writeFileSync(join(root, 'app.sqlite'), Buffer.concat([Buffer.from('SQLite format 3\0'), Buffer.alloc(84)]));
+  const at = (f) => [join(root, f)];
+  assert.deepStrictEqual(W('app.sqlite:users', root), at('app.sqlite'));
+  assert.deepStrictEqual(W('app.sqlite:users:42', root), at('app.sqlite'));
+  assert.deepStrictEqual(W('app.sqlite?q=SELECT 1', root), at('app.sqlite'), 'omp rejects a query on a write; still the database');
+  assert.deepStrictEqual(W('app.sqlite', root), at('app.sqlite'), 'no table: the file itself');
+  // an existing file that is not SQLite suppresses the reading: omp writes the literal name
+  assert.deepStrictEqual(W('notes.db:users', root), at('notes.db:users'));
+  assert.deepStrictEqual(W('fake.db3:t', root), at('fake.db3:t'));
+  assert.deepStrictEqual(W('d.db:t', root), at('d.db'), 'a directory is no candidate, so no database exists');
+  assert.deepStrictEqual(W('x.tar:app.sqlite:t', root), at('x.tar'), 'archive detection runs first');
+});
+
+test('#152-2: write resolves a path the way omp expandPath does (measured: @/abs/file.md)', () => {
+  const home = homedir();
+  for (const [p, file] of [
+    ['@/abs/file.md', '/abs/file.md'],
+    ['@~/x.md', join(home, 'x.md')],
+    ['@~', home],
+    ['~/x.md', join(home, 'x.md')],
+    ['~x.md', join(home, 'x.md')],
+    [':/abs/x.md', '/abs/x.md'],
+    [':./rel.md', resolve(CWD, 'rel.md')],
+    [':../up.md', resolve(CWD, '../up.md')],
+    [':~/x.md', join(home, 'x.md')],
+    ['a\u00A0b\u202Fc.md', resolve(CWD, 'a b c.md')],
+    ['[@/abs/file.md#1A2B]', '/abs/file.md'],
+    ['@/abs/a.zip:m.txt', '/abs/a.zip'],
+    // not shorthands: a literal file name
+    ['@my-file.txt', resolve(CWD, '@my-file.txt')],
+    ['@~x', resolve(CWD, '@~x')],
+    [':x.md', resolve(CWD, ':x.md')],
+    ['a/~/b.md', resolve(CWD, 'a/~/b.md')],
+  ]) {
+    assert.deepStrictEqual(W(p), [file], p);
+  }
+  assert.deepStrictEqual(W('@local://plan.md'), [], 'an @-mentioned internal URL is not a file');
+});
+
+test('#152-2: under WSL a Windows drive path is the mounted file for write, a literal name for edit', { skip: process.platform !== 'linux' && 'omp maps drive paths to /mnt only under WSL' }, (t) => {
+  const saved = [process.env.WSL_DISTRO_NAME, process.env.WSL_INTEROP];
+  t.after(() => {
+    for (const [i, key] of ['WSL_DISTRO_NAME', 'WSL_INTEROP'].entries()) {
+      if (saved[i] === undefined) delete process.env[key];
+      else process.env[key] = saved[i];
+    }
+  });
+  const drive = 'C:\\Users\\me\\f.md';
+  process.env.WSL_DISTRO_NAME = 'Ubuntu';
+  assert.deepStrictEqual(W(drive), ['/mnt/c/Users/me/f.md']);
+  assert.deepStrictEqual(W('c:/Users/me/../f.md'), ['/mnt/c/Users/f.md']);
+  assert.deepStrictEqual(W('@D:\\x.md'), ['/mnt/d/x.md']);
+  assert.deepStrictEqual(E({ path: drive }), [resolve(CWD, drive)], 'pi-edit omits the WSL mapping');
+  delete process.env.WSL_DISTRO_NAME;
+  delete process.env.WSL_INTEROP;
+  assert.deepStrictEqual(W(drive), [resolve(CWD, drive)]);
+});
+
+// #152 AC5 (user decision 2026-11-23). Two shapes of a `write` path do not say which file omp
+// opens, both measured on omp 18.22.0: behind a SECOND wrapper omp writes what it refuses at
+// the top level (`[[file:///…/victim.md]]` overwrote the file, `[[rule://zzprobe]]` the rule's
+// backing file), and a `file://` URL goes through Bun's URL parser, which Node's does not
+// match (`file:///a:b/../tmp/x`: Bun `/tmp/x`, Node `/a:b/tmp/x`). Such a call is refused.
+test('#152-9: a doubly wrapped or file:// write path is refused, never resolved', () => {
+  const refused = (path) => mutationRefusal('write', { path, content: 'x' });
+  for (const p of [
+    '[[src/foo.ts]]', '[[src/foo.ts#1A2B]#9f0e]', '[[src/foo.ts]] ', '[[[src/foo.ts]]]', '[[@/abs/file.md]]',
+    '[[file:///abs/victim.md]]', '[[file:///a:b/../tmp/victim.md]]', '[[rule://x]]', '[[local://plan.md]]', '[[xd://ast_edit]]', '[[x.tar:m]]',
+    'file:///abs/a%20b.md', 'FILE:///abs/x.md', 'file:///a:b/../tmp/victim.md', 'file:///tmp/vic\ntim.md', 'file://host/x', '[file:///abs/x.md#1A2B]',
+    'file:///abs/a.zip:m.txt', 'file:///abs/app.sqlite:users',
+  ]) {
+    assert.match(refused(p) ?? '', /^HARNESS BLOCK: write path .* — the harness cannot tell which file omp would open\./s, JSON.stringify(p));
+    assert.deepStrictEqual(W(p), [], `no file is named either: ${JSON.stringify(p)}`);
+  }
+  assert.equal(mutationRefusal('write', { file_path: '[[src/foo.ts]]' }) === null, false, 'path aliases too');
+  // everything else is judged as before: one wrapper, plain and expanded paths, URLs, `edit`
+  for (const p of ['src/foo.ts', '[src/foo.ts#1A2B]', '[src/foo.ts]', '@/abs/file.md', 'arc.tar:member.json', '[a.zip]:m', 'xd://ast_edit', '[xd://ast_edit#1A2B]',
+    'local://plan.md', 'https://example.com/a', '@file:///abs/x.md', 'notes/file://x.md', '[src/foo.ts#9F0E1]', '']) {
+    assert.equal(refused(p), null, JSON.stringify(p));
+  }
+  assert.equal(mutationRefusal('write', {}), null);
+  assert.equal(mutationRefusal('edit', { path: '[[src/foo.ts]]' }), null, 'pi-edit unwraps once and reads file:// without a URL parser');
+  assert.equal(mutationRefusal('edit', { path: 'file:///abs/x.md' }), null);
+});
+
+// What omp refuses at the top level is judged as the file it would have opened; only what it
+// dispatches stays a URL — including the single-slash form the event plumbing shows for one.
+test('#152-3: a top-level write is a URL only where omp dispatches one', () => {
+  for (const p of ['xd://resolve', 'xd:/retain', 'XD:/retain', 'cfg:/ns/key', 'local:/plan.md', 'skill://x/y.md']) {
+    assert.deepStrictEqual(W(p), [], p);
+  }
+  assert.deepStrictEqual(W('https://example.com/a'), [resolve(CWD, 'https:/example.com/a')]);
+  assert.deepStrictEqual(W('@file:///abs/x.md'), [resolve(CWD, '@file:/abs/x.md')], 'behind an @ it is no file:// URL to omp either');
+  // omp refuses `scheme:/…` on ONE line only: with a line break the string is a file name
+  assert.deepStrictEqual(W('xd:/x\ny'), [resolve(CWD, 'xd:/x\ny')]);
+});
+
+// `edit` paths are resolved by pi-edit (crates/pi-edit path_policy.rs), for every path the
+// model authored: a copied header comes off a direct `path` too, and the head is expanded by
+// pi-edit's own `expand_path`, which is NOT the TypeScript `expandPath`.
+test('#152-2/4: edit targets lose a [path#TAG] wrapper and are expanded as pi-edit expands them', () => {
+  const foo = resolve(CWD, 'src/foo.ts');
+  const home = homedir();
+  for (const p of ['[src/foo.ts#1A2B]', '[src/foo.ts]', '[src/foo.ts#9f0e] ']) {
+    assert.deepStrictEqual(E({ path: p }), [foo], `direct path ${JSON.stringify(p)}`);
+    assert.deepStrictEqual(E({ paths: [p] }), [foo], `parsed target ${JSON.stringify(p)}`);
+  }
+  assert.deepStrictEqual(E({ path: '[src/foo.ts#9F0E1]' }), [resolve(CWD, '[src/foo.ts#9F0E1]')], 'a 5-hex tag is no wrapper');
+  assert.deepStrictEqual(E({ path: '[[src/foo.ts]]' }), [resolve(CWD, '[src/foo.ts]')], 'pi-edit unwraps once');
+  assert.deepStrictEqual(E({ path: '@/abs/file.md' }), ['/abs/file.md']);
+  assert.deepStrictEqual(E({ paths: ['~/y.md'] }), [join(home, 'y.md')]);
+  assert.deepStrictEqual(E({ path: '~y.md' }), [join(home, 'y.md')]);
+  assert.deepStrictEqual(E({ input: '[@~/x.md#1A2B]\n+x\n' }), [join(home, 'x.md')]);
+  assert.deepStrictEqual(E({ path: '@local://plan.md' }), []);
+  assert.deepStrictEqual(E({ path: '/' }), [CWD], 'a path of slashes only is the cwd');
+});
+
+// r1 review: each row is a place where pi-edit and the TypeScript helpers disagree. Gated with
+// the `write` rules, the left column named a file that does not exist while `edit` changed the
+// right one.
+test('#152-2: edit follows pi-edit where it differs from write', () => {
+  const home = homedir();
+  for (const [p, edited, written] of [
+    // `home.join(rest)`: an absolute rest REPLACES the home directory; `write` appends text
+    ['~//tmp/victim.txt', '/tmp/victim.txt', join(home, 'tmp/victim.txt')],
+    ['~\\victim.txt', join(home, 'victim.txt'), `${home}\\victim.txt`],
+    // the stray `:` goes before `./` and `../` only; `write` drops it before `.\` too
+    [':.\\x.md', resolve(CWD, ':.\\x.md'), resolve(CWD, '.\\x.md')],
+    // `@` goes before any drive prefix; `write` wants a Windows ABSOLUTE path
+    ['@C:foo', resolve(CWD, 'C:foo'), resolve(CWD, '@C:foo')],
+    // `file://` is a path, classified before it is decoded, and decoded by pi-edit's own decoder
+    // (`%+1` is a byte there); a `write` of that shape is refused (#152-9)
+    ['file:///abs/a%20b.md', '/abs/a b.md', null],
+    ['file://xd://x', resolve(CWD, 'xd:/x'), null],
+    ['file://bad%ZZ', resolve(CWD, 'file:/bad%ZZ'), null],
+    ['file:///tmp/%+1/../victim.md', '/tmp/victim.md', null],
+    ['file:///tmp/%C3%A9.md', '/tmp/\u00e9.md', null],
+    ['file:///a:b/../tmp/victim.md', '/tmp/victim.md', null],
+    ['@file:///abs/x.md', resolve(CWD, '@file:/abs/x.md'), resolve(CWD, '@file:/abs/x.md')],
+    // trailing whitespace before the wrapper test: U+FEFF is JavaScript's only, U+0085 Rust's only
+    ['[victim.txt]\uFEFF', resolve(CWD, '[victim.txt]\uFEFF'), resolve(CWD, 'victim.txt')],
+    ['[victim.txt]\u0085', resolve(CWD, 'victim.txt'), resolve(CWD, '[victim.txt]\u0085')],
+    // a verbatim prefix with a plain spelling is dropped by pi-edit on every platform
+    ['\\\\?\\C:\\x.md', resolve(CWD, 'C:\\x.md'), resolve(CWD, '\\\\?\\C:\\x.md')],
+  ]) {
+    assert.deepStrictEqual(E({ path: p }), [edited], `edit ${JSON.stringify(p)}`);
+    assert.deepStrictEqual(W(p), written === null ? [] : [written], `write ${JSON.stringify(p)}`);
+  }
+  // the single-slash spelling of a known scheme is refused by pi-edit: no file
+  assert.deepStrictEqual(E({ path: 'file:/abs/x.md' }), []);
+  assert.deepStrictEqual(E({ path: '' }), [], 'an empty path names no file');
+  // an escape that is not UTF-8 fails to decode: pi-edit keeps the string, still a path
+  assert.deepStrictEqual(E({ path: 'file:///tmp/%FF.md' }), [resolve(CWD, 'file:/tmp/%FF.md')]);
+});
+
+test('#152-3: `://` inside a local path does not make it virtual (measured: notes/a://b.md is written)', (t) => {
+  const file = resolve(CWD, 'notes/a:/b.md');
+  assert.deepStrictEqual(W('notes/a://b.md'), [file]);
+  assert.deepStrictEqual(E({ path: 'notes/a://b.md' }), [file]);
+  assert.equal(localFileTarget('notes/a://b.md', CWD), file);
+  assert.deepStrictEqual(W('./pkg://danger.ts'), [resolve(CWD, 'pkg:/danger.ts')], "omp's own spelling for a URI-looking file name");
+  assert.deepStrictEqual(W('pkg://danger.ts'), [resolve(CWD, 'pkg:/danger.ts')], 'omp refuses an unknown scheme; the gate judges the file it would name');
+  assert.deepStrictEqual(W('dir/skill://x.md'), [resolve(CWD, 'dir/skill:/x.md')], 'only local:// is rewritten behind a path prefix');
+  assert.deepStrictEqual(W('foo:bar/local://x.md'), [resolve(CWD, 'foo:bar/local:/x.md')], 'no rewrite behind a scheme-shaped prefix');
+  assert.deepStrictEqual(W('notes/a://local://x.md'), [resolve(CWD, 'notes/a:/local:/x.md')], 'the router scans segments without overlap');
+  // the read of such a file is recorded, so the gated write is not blocked for good
+  const root = tree(t, ['notes/a:/b.md']);
+  assert.equal(readTarget({ path: 'notes/a://b.md' }, plain(join(root, 'notes/a:/b.md')), root), join(root, 'notes/a:/b.md'));
+  assert.equal(readTarget({ path: '@local://plan.md' }, plain(join(root, 'notes/a:/b.md')), root), '', 'an @-mentioned URL is still a URL-addressed read');
+  // what omp's router routes as a URL stays virtual: a registered scheme, a path glued in front
+  // of local:// (`normalize`), a `<file>:conflict://N` (`recoverConflictUriPrefix`)
+  for (const p of ['local://plan.md', '/tmp/x/local://plan.md', 'sub\\local://plan.md', 'src/a.ts:conflict://3']) {
+    assert.deepStrictEqual(W(p), [], `write must not gate: ${p}`);
+  }
+  // pi-edit has neither rewrite: both are files to `edit`
+  assert.deepStrictEqual(E({ path: 'dir/local://x.md' }), [resolve(CWD, 'dir/local:/x.md')]);
+  assert.deepStrictEqual(E({ path: 'src/a.ts:conflict://3' }), [resolve(CWD, 'src/a.ts:conflict:/3')]);
+});
+
+// omp splits its output on `\n` alone; JavaScript's `m` flag also starts a line after U+2028,
+// U+2029 and a lone CR, so text INSIDE a displayed line could pose as a header.
+test('#152-5: only a line feed starts a [path#TAG] header line', () => {
+  const a = resolve(CWD, 'a.md');
+  for (const sep of ['\u2028', '\u2029', '\r']) {
+    assert.deepEqual(searchTrackTargets(undefined, `[a.md#1A2B]\n12:x${sep}[victim.md#1A2B]\n13:y`, CWD), [a], `search text, ${JSON.stringify(sep)}`);
+    assert.deepStrictEqual(E({ input: `[a.md#1A2B]\n+x${sep}[victim.md#1A2B]\n` }), [a], `patch body, ${JSON.stringify(sep)}`);
+  }
+  assert.deepEqual(searchTrackTargets(undefined, '[a.md#1A2B]\r\n*1:x\r\n[b.md#1A2B]', CWD), [a, resolve(CWD, 'b.md')], 'CRLF output still parses');
+});
+
+// omp's TypeScript tools hand an ABSOLUTE path to the file system as spelled, so the kernel
+// resolves `..` after following a symlink (measured for read and write: with link -> real/sub,
+// `<root>/link/../x` is `<root>/real/x`, reported verbatim). A relative path is folded by
+// `path.resolve` first, and pi-edit folds every path lexically.
+test('#152-7: an absolute path keeps the kernel reading of `..` behind a symlink; edit folds it', { skip: process.platform === 'win32' && 'needs a POSIX symlink' }, (t) => {
+  const root = tree(t, ['real/sub/keep', 'real/secret.ts', 'secret.ts', 'real/pack.zip', 'pack.zip']);
+  symlinkSync(join('real', 'sub'), join(root, 'link'));
+  const spelled = `${root}/link/../secret.ts`;
+  assert.equal(readTarget({ path: spelled }, plain(spelled), root), join(root, 'real/secret.ts'));
+  assert.deepStrictEqual(W(spelled, root), [join(root, 'real/secret.ts')]);
+  assert.deepStrictEqual(W('link/../secret.ts', root), [join(root, 'secret.ts')]);
+  assert.deepStrictEqual(E({ path: spelled }, root), [join(root, 'secret.ts')]);
+  assert.equal(readTarget({ path: `${root}/link/../pack.zip:m.json?q=.x` }, resolved(`${root}/link/../pack.zip:m.json`), root), join(root, 'real/pack.zip'));
+  // nothing on disk to follow: the lexical reading stands
+  assert.deepStrictEqual(W(`${root}/nodir/../n.md`, root), [join(root, 'n.md')]);
+  assert.deepStrictEqual(W(`${root}/link/new/../n.md`, root), [join(root, 'link/n.md')]);
+  // r1 review: only a name that IS a link is followed. Under a symlinked ancestor the textual
+  // parent is the same directory, and its spelling is what a later relative edit resolves to.
+  symlinkSync('real', join(root, 'ws'));
+  const under = `${root}/ws/sub/../secret.ts`;
+  assert.equal(readTarget({ path: under }, plain(under), root), join(root, 'ws/secret.ts'));
+  assert.deepStrictEqual(E({ path: 'ws/secret.ts' }, root), [join(root, 'ws/secret.ts')]);
+  // r2 review: a link whose target spells `..` past another link — the system call resolves
+  // it, Node's own realpathSync would fold it as text and land in real/
+  const nest = tree(t, ['else/sub/keep', 'else/victim.md', 'real/sub/keep', 'real/victim.md']);
+  symlinkSync('../else/sub', join(nest, 'real/second'));
+  symlinkSync('real/second/../sub', join(nest, 'link')); // spelled out: path.join would fold the `..`
+  assert.deepStrictEqual(W(`${nest}/link/../victim.md`, nest), [join(nest, 'else/victim.md')]);
+});
+
+// #152 item 8. Measured on omp 18.22.0: beside an existing `a.zip`, `read a.zip:b.json` reads
+// the MEMBER (or fails when there is none), so a literal file named `a.zip:b.json` is read only
+// while `a.zip` does not exist. A plain read of it reports a bare path source; a `?q=` read
+// reports `resolvedPath` as well — the very details a member query read carries.
+test('#152-8: a literal file read and then deleted is not taken for a member read — except a read that reports resolvedPath (residual)', (t) => {
+  const root = tree(t, ['a.zip:b.json']); // at read time: the literal file, no archive
+  const literal = join(root, 'a.zip:b.json');
+  const plainRead = plain(literal); // details of `read a.zip:b.json`
+  const queryRead = resolved(literal); // details of `read a.zip:b.json?q=.k`
+  assert.equal(readTarget({ path: 'a.zip:b.json' }, plainRead, root), literal);
+  assert.equal(readTarget({ path: 'a.zip:b.json?q=.k' }, queryRead, root), literal);
+  // the race: before the handler runs, the literal file is deleted and an archive a.zip appears
+  rmSync(literal);
+  writeFileSync(join(root, 'a.zip'), 'x\n');
+  assert.equal(readTarget({ path: 'a.zip:b.json' }, plainRead, root), literal, 'a bare path source is never reduced: the unread a.zip is not recorded');
+  // kept residual: this report is the one a member query read produces, on the disk one leaves
+  assert.equal(readTarget({ path: 'a.zip:b.json?q=.k' }, queryRead, root), join(root, 'a.zip'));
+  // kept residual, second form (measured): a literal file that is itself an archive,
+  // `a.zip:b.zip`, is opened first even beside `a.zip`, and every archive read reports
+  // `resolvedPath`. Here only the deletion is needed.
+  const both = tree(t, ['a.zip', 'a.zip:b.zip']);
+  const listing = { ...resolved(join(both, 'a.zip:b.zip')), isDirectory: true };
+  assert.equal(readTarget({ path: 'a.zip:b.zip' }, listing, both), '', 'both on disk: the report is ambiguous, nothing is recorded');
+  rmSync(join(both, 'a.zip:b.zip'));
+  assert.equal(readTarget({ path: 'a.zip:b.zip' }, listing, both), join(both, 'a.zip'));
 });
