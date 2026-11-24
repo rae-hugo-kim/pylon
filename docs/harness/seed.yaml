@@ -1,5 +1,6 @@
 name: cross-repo-time-cd-149
-status: approved
+status: done
+completed: 2026-11-24
 version: 2
 task_id: "20261121-144622-149a"
 # gh-loop worker Stage 2에 따라 이슈 #149 본문(실측 표, 범위 1~4, AC 4개, 범위 밖)을 명세로 삼습니다.
