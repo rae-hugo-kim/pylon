@@ -31,6 +31,7 @@ import { hasCapability, skipUnless } from './helpers/capabilities.mjs';
 for (const k of Object.keys(process.env)) if (k.startsWith('GIT_')) delete process.env[k];
 Object.assign(process.env, { HOME: tmpdir(), GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_NOSYSTEM: '1',
   GIT_AUTHOR_NAME: 't', GIT_AUTHOR_EMAIL: 't@x', GIT_COMMITTER_NAME: 't', GIT_COMMITTER_EMAIL: 't@x' });
+delete process.env.CDPATH;   // a relative `cd` under CDPATH puts the commit target in doubt (#149): the suite must not inherit one
 const git = (dir, ...args) => execFileSync('git', args, { cwd: dir, env: process.env, stdio: ['ignore', 'pipe', 'pipe'] }).toString().trim();
 
 function repo(root, name, files) {
@@ -146,6 +147,42 @@ test('shellWriteTargets: `cd link/..` is logical, `cd -P link/..` is physical', 
     const gitOf = (cmd) => shellWriteTargets(cmd, B).git;
     assert.deepEqual(gitOf(`cd ${B}/link/.. && git push`), [{ dir: B, verb: 'push' }], 'cd is logical like bash: link/.. is the link\'s parent');
     assert.deepEqual(gitOf(`cd -P ${B}/link/.. && git push`), [{ dir: ext, verb: 'push' }], 'cd -P is physical: link/.. is the TARGET\'s parent (r3 C1)');
+  });
+});
+
+test('shellWriteTargets: a cwd shifter behind `time` and a relative cd under CDPATH put later commits in doubt, and change nothing else (#149)', () => {
+  withTree(({ B, ext }) => {
+    const scan = (cmd, env) => shellWriteTargets(cmd, B, env);
+    // `time` is a keyword: the shifter runs in this shell and the commit after it may land anywhere.
+    for (const cmd of [`time cd ${ext} && git commit -m x`, `time -p cd ${ext} && git commit -m x`, `time -- cd ${ext}; git push`, `time time cd ${ext} && git commit -m x`,
+      `time command cd ${ext} && git commit -m x`, `time builtin cd ${ext} && git commit -m x`, `! time cd ${ext}; git commit -m x`, `time ! cd ${ext}; git commit -m x`,
+      `time { cd ${ext}; } && git commit -m x`, `time pushd ${ext} && git commit -m x`, `time popd; git commit -m x`, `time eval "cd ${ext}" && git commit -m x`,
+      `time source env.sh; git commit -m x`, `time eval 'cd ${ext} && git commit -m x'`, `time cd ${ext}; bash -c 'git commit -m x'`, `time cd sub && git -C ${ext} commit -m x`]) {
+      assert.ok(scan(cmd).unknown, `must be unknown: ${cmd}`);
+    }
+    // Not a shifter behind `time`, a shifter in another shell, or no commit after it: no finding.
+    assert.deepEqual([scan('time git commit -m x').git, scan('time git commit -m x').unknown], [[{ dir: B, verb: 'commit' }], null]);
+    assert.equal(scan(`time cd ${ext} && git status`).unknown, null, 'the doubt matters only for a commit/push');
+    assert.equal(scan(`git commit -m x; time cd ${ext}`).unknown, null, 'a commit BEFORE the timed cd is not in doubt');
+    assert.equal(scan(`bash -c 'time cd ${ext}'; git commit -m x`).unknown, null, 'a cd in a child shell does not move this one');
+    assert.equal(scan(`sudo cd ${ext}; git commit -m x`).unknown, null, 'only `time` is a keyword — other wrappers run a program');
+    // The tracked cwd, and with it the attribution of file operands, is what it was before #149.
+    assert.deepEqual(scan(`time cd ${ext} && rm f`).files, [join(B, 'f')]);
+    assert.deepEqual(scan('time cd /definitely/missing; rm f').files, [join(B, 'f')]);
+    assert.deepEqual(scan(`time eval rm ${ext}/f`).files, [join(ext, 'f')]);
+    assert.deepEqual(scan('time rm f').files, [join(B, 'f')]);
+    // CDPATH: bash looks a relative operand up in the CDPATH entries before the cwd.
+    for (const [cmd, env] of [['cd sub && git commit -m x', { CDPATH: ext }], ['cd -P sub && git commit -m x', { CDPATH: ext }], ['cd sub/../sub && git push', { CDPATH: ext }],
+      [`CDPATH=${ext} cd sub && git commit -m x`], [`CDPATH=${ext}; cd sub && git commit -m x`], [`export CDPATH=${ext}; cd sub && git commit -m x`],
+      [`declare CDPATH=${ext}; cd sub && git commit -m x`], [`CDPATH+=${ext} cd sub && git commit -m x`], [`CDPATH=${ext}; bash -c 'cd sub && git commit -m x'`]]) {
+      assert.ok(scan(cmd, env).unknown, `must be unknown: ${cmd}`);
+    }
+    for (const cmd of ['cd ./sub && git commit -m x', `cd ${B}/sub && git commit -m x`]) {
+      assert.deepEqual([scan(cmd, { CDPATH: ext }).git, scan(cmd, { CDPATH: ext }).unknown], [[{ dir: join(B, 'sub'), verb: 'commit' }], null], `bash skips the CDPATH search: ${cmd}`);
+    }
+    assert.deepEqual([scan('cd .. && git commit -m x', { CDPATH: ext }).git, scan('cd .. && git commit -m x', { CDPATH: ext }).unknown], [[{ dir: join(B, '..'), verb: 'commit' }], null]);
+    assert.deepEqual([scan('cd sub && rm f', { CDPATH: ext }).files, scan('cd sub && rm f', { CDPATH: ext }).unknown], [[join(B, 'sub', 'f')], null], 'file operands follow the cd as before; no commit, no finding');
+    assert.equal(scan('cd sub && git commit -m x', { CDPATH: '' }).unknown, null, 'an empty CDPATH in the call env is not set');
   });
 });
 
@@ -274,6 +311,77 @@ test('② an unresolvable commit/push target fails closed; a harness-bearing rep
     const consumer = repo(root, 'consumer', { 'README.md': 'r\n' });
     mkdirSync(join(consumer, '.omp', 'extensions', 'harness'), { recursive: true });
     assert.match(verdict(`git -C ${consumer} commit -m x`)?.block ?? '', /targets another repo/);
+  });
+});
+
+// --- #149: `time cd`, CDPATH, and the verdicts of the issue's table ------------------------
+// Where each commit really lands was measured with bash 5.2.21 (2026-11-21 and 2026-11-24,
+// fixture repos; harness_integration_contract "Cross-repo guard: `time cd`, CDPATH …").
+
+test('② `time cd <other repo> && git commit` fails closed: the `time` keyword leaves the cd in the current shell (#149 AC1)', async () => {
+  await withFixture(({ session, external, worktree }) => {
+    const verdict = (command) => crossRepoBashVerdict({ command, toolCwd: session, sessionCwd: session });
+    // Every commit below lands in the OTHER repo.
+    for (const cmd of [`time cd ${external} && git commit -m x`, `time -p cd ${external} && git commit -m x`, `time -- cd ${external} && git commit -m x`,
+      `time time cd ${external} && git commit -m x`, `time command cd ${external} && git commit -m x`, `time builtin cd ${external} && git commit -m x`,
+      `! time cd ${external}; git commit -m x`, `time ! cd ${external}; git commit -m x`, `time { cd ${external}; } && git commit -m x`,
+      `time pushd ${external} && git commit -m x`, `time eval "cd ${external}" && git commit -m x`, `time cd ${external}; git push`]) {
+      assert.match(verdict(cmd)?.block ?? '', /cannot resolve which repo .* failing closed/, `must fail closed: ${cmd}`);
+    }
+    assert.match(verdict(`time cd ${external} && git commit -m x`).block, /behind `time`/, 'the block names the reason');
+    assert.equal(verdict('time git commit -m x'), null, '`time` in front of the commit itself is not a shifter');
+    assert.equal(verdict(`time cd ${external} && git status`), null, 'no commit, no finding');
+    // The target is not followed, so a timed cd that stays inside the session repo is blocked
+    // as well, and so are `\time` / `command time` (they run /usr/bin/time, whose `cd` child
+    // cannot move the shell, but tokenize like the keyword): false blocks, in the safe direction.
+    for (const cmd of [`time cd ${worktree} && git commit -m x`, `\\time cd ${external}; git commit -m x`, `command time cd ${external}; git commit -m x`]) {
+      assert.match(verdict(cmd)?.block ?? '', /failing closed/, `false block, kept: ${cmd}`);
+    }
+  });
+});
+
+test('② the six spellings of the #149 table (AC2): the two false blocks stay blocked', async () => {
+  await withFixture(({ session, external }) => {
+    const verdict = (command) => crossRepoBashVerdict({ command, toolCwd: session, sessionCwd: session });
+    assert.match(verdict(`cd ${external} && git commit -m x`)?.block ?? '', /targets another repo/);        // lands in external
+    assert.match(verdict(`git -C ${external} commit -m x`)?.block ?? '', /targets another repo/);           // lands in external
+    assert.match(verdict(`time cd ${external} && git commit -m x`)?.block ?? '', /failing closed/);         // lands in external — was ALLOWED
+    // The next two commit in the SESSION repo (the cd runs in the pipeline's subshell / never
+    // runs). They stay blocked: the scan cannot tell them from a cd that did run.
+    assert.match(verdict(`cd ${external} | cat; git commit -m x`)?.block ?? '', /targets another repo/);
+    assert.match(verdict(`false && cd ${external}; git commit -m x`)?.block ?? '', /targets another repo/);
+    assert.equal(verdict('git commit -m x'), null);                                                         // lands in the session repo
+  });
+});
+
+test('② a relative `cd` under CDPATH is not trusted: the commit fails closed (#149 AC3)', async () => {
+  await withFixture(({ root, session }) => {
+    // <root>/external is the other repo; the session repo has its own ./external directory. With
+    // CDPATH=<root>, bash resolves `cd external` to <root>/external and the commit lands there.
+    mkdirSync(join(session, 'external'));
+    const verdict = (command, env) => crossRepoBashVerdict({ command, toolCwd: session, sessionCwd: session, env });
+    assert.equal(verdict('cd external && git commit -m x'), null, 'without CDPATH the cd stays in the session repo');
+    for (const cmd of ['cd external && git commit -m x', 'cd -P external && git commit -m x', 'cd external/../external && git commit -m x']) {
+      assert.match(verdict(cmd, { CDPATH: root })?.block ?? '', /failing closed/, `CDPATH in the call env: ${cmd}`);
+    }
+    assert.match(verdict('cd external && git commit -m x', { CDPATH: root }).block, /CDPATH/, 'the block names the reason');
+    for (const cmd of [`CDPATH=${root} cd external && git commit -m x`, `CDPATH=${root}; cd external && git commit -m x`,
+      `export CDPATH=${root}; cd external && git commit -m x`, `declare CDPATH=${root}; cd external && git commit -m x`,
+      `CDPATH+=${root} cd external && git commit -m x`]) {
+      assert.match(verdict(cmd)?.block ?? '', /failing closed/, `CDPATH set in the line: ${cmd}`);
+    }
+    // bash skips the CDPATH search for an absolute operand and for one that starts with `./` or `../`.
+    for (const cmd of ['cd ./external && git commit -m x', 'cd ../session/external && git commit -m x', `cd ${session}/external && git commit -m x`]) {
+      assert.equal(verdict(cmd, { CDPATH: root }), null, `not searched through CDPATH: ${cmd}`);
+    }
+    // An inline `CDPATH=` (empty) does switch the search off in bash; any CDPATH assignment in
+    // the line is read as "set" all the same — a false block, spelled away with `cd ./external`.
+    assert.match(verdict('CDPATH= cd external && git commit -m x')?.block ?? '', /failing closed/);
+    process.env.CDPATH = root;
+    try {
+      assert.match(verdict('cd external && git commit -m x')?.block ?? '', /failing closed/, 'CDPATH inherited from the omp process');
+      assert.equal(verdict('cd external && git commit -m x', { CDPATH: '' }), null, 'an empty CDPATH in the call env overrides the inherited one');
+    } finally { delete process.env.CDPATH; }
   });
 });
 

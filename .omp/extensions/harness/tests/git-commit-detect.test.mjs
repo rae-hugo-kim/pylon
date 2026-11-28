@@ -21,6 +21,8 @@ import { join } from 'node:path';
 import { isGitCommit, parseCommitForm, isWipCommit, commitTargetDir } from '../gates/git-commit-detect.mjs';
 import { skipUnless } from './helpers/capabilities.mjs';
 
+delete process.env.CDPATH;   // a relative `cd` under CDPATH has no trusted target (#149): the suite must not inherit one
+
 // --- Should DETECT (true): a real `git commit` invocation in some segment ---
 const DETECT = [
   'git commit',
@@ -437,6 +439,21 @@ test('commitTargetDir: ONE literal cd into an existing directory is followed; an
                        'cd wt && git commit -m a && git -C ../other commit -m b']) {
       assert.equal(commitTargetDir(cmd, root), null, cmd);
     }
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test('commitTargetDir: a cwd shifter behind `time` or a relative cd under CDPATH leaves no trusted target (#149)', () => {
+  const root = realpathSync(mkdtempSync(join(tmpdir(), 'ctd-doubt-')));
+  try {
+    const wt = join(root, 'wt');
+    mkdirSync(wt);
+    for (const cmd of ['time cd wt && git commit -m x', 'time -p cd wt; git commit -m x', 'time pushd wt && git commit', 'time eval "cd wt" && git commit']) {
+      assert.equal(commitTargetDir(cmd, root), null, cmd);
+    }
+    assert.equal(commitTargetDir('time git commit -m x', root), root, '`time` in front of the commit itself changes nothing');
+    assert.equal(commitTargetDir('cd wt && git commit -m x', root, { CDPATH: '/elsewhere' }), null, 'a relative cd under CDPATH');
+    assert.equal(commitTargetDir('cd ./wt && git commit -m x', root, { CDPATH: '/elsewhere' }), wt, '`./` skips the CDPATH search');
+    assert.equal(commitTargetDir('cd wt && git commit -m x', root, { CDPATH: '' }), wt);
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
 

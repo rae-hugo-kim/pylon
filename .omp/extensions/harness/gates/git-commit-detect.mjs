@@ -814,12 +814,13 @@ export function isWipCommit(command) {
 // cross-repo guard is given, so the snapshot watches the directory the guard judged. Returns
 // null when that model has no single trusted target: anything it reports as `unknown` (a second
 // `cd`, a missing or `$VAR` directory, a subshell, `pushd`/`eval`/`source`, `env -C`,
-// --git-dir/--work-tree/GIT_DIR=, a -C value the shell would still expand), commits into two
+// --git-dir/--work-tree/GIT_DIR=, a -C value the shell would still expand, a `cd` or another
+// cwd shifter behind `time`, a relative `cd` while CDPATH is set — #149), commits into two
 // different repos, or no commit it attributes at all (`git commit --help`). Callers treat null
 // as "unknown" and fall back to the exit code rather than guessing a HEAD. Where the single-cwd
-// model is wrong about a `cd` (one that fails, runs in a pipeline or background, is skipped by
-// `&&`/`||`, hides behind `time`, or resolves through CDPATH) the snapshot watches the wrong
-// directory — an advisory misreport, enumerated in harness_integration_contract §3.
+// model is wrong about a `cd` (one that fails, runs in a pipeline or background, or is skipped
+// by `&&`/`||`) the snapshot watches the wrong directory — an advisory misreport, enumerated
+// in harness_integration_contract §3.
 // `cd`/`pushd`/`popd`/`eval`/`source` move the cwd or re-execute text; verificationCwd and
 // scanWriteTargets stop following at any of them except the one literal `cd` each models.
 const CWD_SHIFTERS = new Set(['cd', 'pushd', 'popd', 'eval', 'source']);
@@ -899,6 +900,15 @@ export function commitTargetDir(command, baseDir, env = {}) {
 // whose arguments mention one, is reported in `unknown`; a relative file operand there is
 // dropped (absolute operands are still attributed). Over-collection is harmless — the guard
 // only compares repo identities.
+//
+// Two forms move the shell without the model seeing where to (#149, measured on bash 5.2.21):
+// a `cd`/`pushd`/`popd`/`eval`/`source` behind `time` — a shell KEYWORD, so what it times runs
+// in this shell (`time cd other && git commit` commits in `other`), while the scan reads `time`
+// as a wrapper and leaves the cwd alone — and a relative `cd` while CDPATH is set (bash
+// searches the CDPATH entries before the cwd unless the operand starts with `./` or `../`).
+// After either, the directory of a later commit/push is in DOUBT: it is reported in `unknown`
+// (fail-closed). Nothing else changes — the cwd the scan tracks, and with it the attribution
+// of relative file operands, stays what it was before #149.
 //
 //   shellWriteTargets(command, baseDir, env) -> { git: [{ dir, verb }], files: [abs], unknown }
 //
@@ -1065,6 +1075,24 @@ function programStart(toks) {
   return i;
 }
 
+// The program a `time` keyword at toks[i] times: past its `-p`/`--`, a repeated `time`, and
+// whatever programStart skips (`time ! cd x`, `time command cd x`, `time { cd x`).
+function timedProgram(toks, i) {
+  while (toks[i] === 'time') {
+    i += 1;
+    while (toks[i] === '-p' || toks[i] === '--') i += 1;
+    i += programStart(toks.slice(i));
+  }
+  return i < toks.length ? basename(toks[i]) : '';
+}
+
+// True when bash would look a `cd` operand up in CDPATH first: one operand that is neither
+// absolute nor starts with `./` or `../` (and is not `-`).
+function cdpathSearches(args) {
+  const operands = args.filter((t) => !isFlag(t));
+  return operands.length === 1 && operands[0] !== '-' && !path.isAbsolute(operands[0]) && !/^\.\.?(?:\/|$)/.test(operands[0]);
+}
+
 // The cwd after a `cd` segment, or null when it cannot be followed: unknown current cwd, flags
 // aside not exactly one literal operand, `cd -`, or a target that is not an existing directory
 // (the shell would stay where it was — and `cd missing || cd elsewhere` is two cds anyway).
@@ -1186,7 +1214,9 @@ function addFiles(out, paths, cwd) {
   }
 }
 
-function scanGitCall(argv, cwd, retarget, out) {
+// `doubt` (a reason, or null): the shell may no longer be in `cwd` (#149) — a commit/push the
+// walk would attribute to a directory is reported as unknown as well.
+function scanGitCall(argv, cwd, retarget, out, doubt) {
   const rest = withoutRedirections(argv);                              // `git -C E 2>/dev/null push` (r4-5)
   const aliased = rest.some((t, k) => (k > 0 && ALIAS_WRITE_DEF.test(t) && (rest[k - 1] === '-c' || rest[k - 1] === '--config-env')) || /^--config-env=alias\.[^=]+=\s*(?:!|(?:git\s+)?(?:commit|push)\b)/i.test(t));
   if (cwd === null || retarget) {
@@ -1204,17 +1234,23 @@ function scanGitCall(argv, cwd, retarget, out) {
     if (r.verb === undefined || !GIT_NON_WRITE_VERBS.has(r.verb)) out.unknown ??= 'repo-redirecting git option (-C with an unexpanded value, --git-dir, --work-tree, …)';
     return;
   }
-  if (isGitWriteVerb(r.verb)) out.git.push({ dir: r.target, verb: r.verb });
+  if (isGitWriteVerb(r.verb)) {
+    if (doubt) out.unknown ??= doubt;
+    out.git.push({ dir: r.target, verb: r.verb });
+  }
 }
 
-function scanWriteTargets(command, baseDir, depth, out, envRetarget) {
+function scanWriteTargets(command, baseDir, depth, out, envRetarget, envCdpath, envDoubt) {
   if (depth > MAX_DEPTH) { out.unknown ??= 'bash -c nesting too deep'; return; }
-  let cwd = baseDir, cdSeen = 0, lineRetarget = envRetarget;
+  let cwd = baseDir, cdSeen = 0, lineRetarget = envRetarget, cdpath = envCdpath, doubt = envDoubt;
   for (const seg of lexSegments(command)) {
     const toks = tokenize(seg);
     if (toks.length === 0) continue;
     addFiles(out, outputRedirectTargets(seg), cwd);
     const i = programStart(toks);
+    // Any CDPATH assignment in the line counts as "set" from here on — an empty one too, and
+    // `unset` is not modelled: conservative.
+    if (toks.some((t) => /^CDPATH\+?=/.test(t))) cdpath = true;
     // A standalone `GIT_DIR=…` assignment, or `export`/`declare -x`/`typeset -x GIT_DIR=…`,
     // retargets every later segment of the line (review r2 A2, r3 C2) — unlike a prefix
     // assignment, which scopes to its own command. (`unset` is not modelled: conservative.)
@@ -1223,7 +1259,9 @@ function scanWriteTargets(command, baseDir, depth, out, envRetarget) {
     if (i >= toks.length) continue;
     const prog = basename(toks[i]);
     if (prog === 'cd') {
-      cwd = (++cdSeen === 1 && !hasUnquotedParen(seg)) ? cdTarget(cwd, withoutRedirections(toks.slice(i + 1))) : null;
+      const args = withoutRedirections(toks.slice(i + 1));
+      if (cdpath && cdpathSearches(args)) doubt ??= 'a relative `cd` while CDPATH is set may land in a CDPATH entry — write `cd ./<dir>`';
+      cwd = (++cdSeen === 1 && !hasUnquotedParen(seg)) ? cdTarget(cwd, args) : null;
       continue;
     }
     if (EVAL_LIKE.has(prog) || CWD_SHIFTERS.has(prog)) {
@@ -1241,6 +1279,15 @@ function scanWriteTargets(command, baseDir, depth, out, envRetarget) {
       // enumerates shell programs there.
       const k = toks.findIndex((t, idx) => idx > i && isMutator(basename(t)));
       if (k >= 0) addFiles(out, mutatorOperands(basename(toks[k]), toks.slice(k + 1)), toks.slice(i, k).some((t) => WRAPPER_CHDIR.test(t)) ? null : cwd);
+      // `time` is the one "wrapper" that is a shell keyword: a cwd shifter behind it runs in
+      // this shell. Where it leaves the shell is not followed — later commits are in doubt.
+      const timed = toks[i] === 'time' ? timedProgram(toks, i) : '';
+      if (timed === 'cd' || EVAL_LIKE.has(timed) || CWD_SHIFTERS.has(timed)) {
+        doubt ??= `a \`${timed}\` behind \`time\` runs in the current shell and may have moved it`;
+        if (timed !== 'cd' && toks.some((t) => /\bgit\b/.test(t)) && toks.some((t) => /\b(?:commit|push)\b/.test(t))) {
+          out.unknown ??= `a \`${timed}\` argument mentions a git commit/push`;
+        }
+      }
     }
     for (const pi of programCandidates(toks)) {
       const before = toks.slice(0, pi);
@@ -1250,9 +1297,9 @@ function scanWriteTargets(command, baseDir, depth, out, envRetarget) {
       const b = basename(rest[0]);
       if (b === 'bash' || b === 'sh') {
         const inner = bashDashCPayload(rest);
-        if (inner !== null) scanWriteTargets(inner, segCwd, depth + 1, out, retarget);
+        if (inner !== null) scanWriteTargets(inner, segCwd, depth + 1, out, retarget, cdpath, doubt);
       } else if (b === 'git') {
-        scanGitCall(rest, segCwd, retarget, out);
+        scanGitCall(rest, segCwd, retarget, out, doubt);
       }
     }
   }
@@ -1261,8 +1308,10 @@ function scanWriteTargets(command, baseDir, depth, out, envRetarget) {
 export function shellWriteTargets(command, baseDir, env = {}) {
   const out = { git: [], files: [], unknown: null };
   if (!command || typeof command !== 'string' || !baseDir) return out;
-  const envRetarget = Boolean(env && typeof env === 'object' && Object.keys(env).some((k) => TRIPWIRE_RETARGET_ENV.test(k)));
-  scanWriteTargets(command, baseDir, 0, out, envRetarget);
+  const callEnv = env && typeof env === 'object' ? env : {};
+  const envRetarget = Object.keys(callEnv).some((k) => TRIPWIRE_RETARGET_ENV.test(k));
+  // CDPATH as the shell will see it: the call's env over the omp process's own (verificationCwd reads it the same way).
+  scanWriteTargets(command, baseDir, 0, out, envRetarget, Boolean(callEnv.CDPATH ?? process.env.CDPATH), null);
   return out;
 }
 

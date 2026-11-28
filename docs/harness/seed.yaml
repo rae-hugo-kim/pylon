@@ -1,81 +1,66 @@
-name: read-path-mutation-targets-152
+name: cross-repo-time-cd-149
 status: done
-completed: 2026-11-23
-version: 3
-task_id: "20261121-235150-0dd2"
-# gh-loop worker Stage 2에 따라 이슈 #152 본문(항목 8건, 범위 3항, AC 4개, 범위 밖 2건)을 명세로 삼습니다.
-# 이슈 본문이 사용자 승인 명세이므로 처음부터 approved로 씁니다. 직전 완료 seed(read-path-remirror-109)는 git 이력에 보존합니다.
+completed: 2026-11-24
+version: 2
+task_id: "20261121-144622-149a"
+# gh-loop worker Stage 2에 따라 이슈 #149 본문(실측 표, 범위 1~4, AC 4개, 범위 밖)을 명세로 삼습니다.
+# 이슈 본문이 사용자 승인 명세이므로 처음부터 approved로 씁니다. 직전 완료 seed(read-path-mutation-targets-152)는 git 이력에 보존합니다.
+# v1(로컬 커밋 6f1afa9, 푸시하지 않음)은 "실행됐는지 확신할 수 없는 cd는 두 디렉터리를 모두 판정한다"는 AC5를 더했습니다.
+# 그 후보 모델은 리뷰 4라운드(r1 PASS WITH NOTES, r2~r4 FAIL)에서 매번 새 회귀를 냈고, 사용자 결정 B
+# (2026-11-24, session-decision nonce 1795430663-26709)로 범위를 이슈 원문으로 줄였습니다. v2는 새 main(f660c3c) 위에서 다시 씁니다.
 goal: >
-  #152: gates/read-path.mjs가 `write`·`edit` 대상을 입력 문자열이 아니라 omp 18.22.0이 실제로 여는 파일로
-  해석하게 해, 읽지 않은 파일이 context-gate를 통과하던 경로(#109 리뷰에서 범위 밖으로 남긴 기존 결함 7건)를
-  막고, 삭제 경합 1건은 좁힌 뒤 남는 경우를 근거와 함께 잔존면으로 기록합니다. 리뷰에서 드러난 9번째 계열
-  (두 번 감싼 래퍼·`file://` URL의 `write`)은 대상 파일을 추정하지 않고 `tool_call`에서 차단합니다.
+  #149: cross-repo 가드(#15 ②)가 `time cd <다른 리포> && git commit`을 차단하게 하고,
+  CDPATH가 걸린 상대 cd의 판정을 실측으로 정해 테스트와 통합 계약에 고정합니다.
+  이슈 표의 거짓 차단 두 형태는 그대로 두고, 실행되지 않은 cd가 만드는 역방향 우회는 실측해 계약 잔존면에 적습니다.
 constraints:
-  - "읽지 않은 파일을 읽은 것으로 기록하거나 실제로 바뀌는 파일을 게이트가 놓치는 방향이 유령 경로(거짓 차단)보다 나쁩니다. omp의 동작을 알 수 없는 형태는 닫힌 쪽(게이트 대상에 넣는 쪽)으로 둡니다."
-  - "업스트림 동작은 추측하지 않고 문서(omp://tools/write.md), v18.22.0 소스(`packages/coding-agent/src/tools/{write,path-utils,conflict-detect,sqlite-reader}.ts`, `packages/coding-agent/src/internal-urls/router.ts`, `packages/utils/src/{path.ts,ar/open.ts,ar/registry.ts}`, `crates/pi-edit/src/path_policy.rs`, `packages/coding-agent/src/extensibility/tool-event-input.ts`), 실제 도구 실측으로 확인합니다."
-  - "항목마다 재현 테스트를 먼저 쓰고(RED) 고치거나, 근거와 함께 잔존면으로 둡니다(이슈 범위 1)."
-  - "1번은 omp `write`의 컨테이너 문법(`parseArchivePathCandidates`·`parseSqlitePathCandidates`와 `#resolveArchiveWritePath`·`#resolveSqliteWritePath`의 디스크 우선순위)을, 2번은 omp `expandPath`와 `resolveToCwd`를 기준으로 맞춥니다(이슈 범위 2)."
-  - "`write`와 `edit`은 경로 해석이 다릅니다 — `write`는 TypeScript 라우터·`resolveToCwd`(절대 경로는 철자 그대로, WSL 드라이브 매핑, `local://` 접두 재작성, `<file>:conflict://N`), `edit`은 pi-edit `path_policy.rs`(모든 경로를 문자열로 접음, 두 재작성 없음, `file://`은 경로). 도구별로 따로 미러합니다."
-  - "`edit` 대상(직접 `path`·`paths`·패치 헤더)은 pi-edit의 `resolve`(`unwrap_hashline_header_path` → `address` → `expand_path` → `lexical_normalize`)를 따로 옮긴 함수로 풉니다. TypeScript `expandPath`를 그대로 쓰지 않습니다 — r1 리뷰가 둘이 갈리는 입력(`~//abs`, `~\\x`, `:.\\x`, `@C:x`, `file://`의 분류 순서, 꼬리 공백 U+FEFF·U+0085)에서 게이트가 없는 파일을 보고 `edit`이 읽지 않은 파일을 고치는 것을 보였습니다. `write`만 고치면 `edit [@/abs/file.md#TAG]`가 같은 우회로 남으므로 `edit`도 이 이슈에서 고칩니다."
-  - "`write`의 두 번 감싼 래퍼(`[[…]]`)와 `file://` URL은 대상 파일을 추정하지 않고 차단합니다(2026-11-23 사용자 결정 A, session-decision nonce 1795278339-5918). omp는 여는 경로에서 래퍼를 한 번 더 벗기고(`resolvePlanPath`) 최상위에서 거부하는 대상을 그 뒤에서는 그대로 씁니다(실측: `[[dbl.md]]`, `[[file:///…/victim.md]]`, 읽기 전용 스킴의 배킹 파일을 덮어쓰는 `[[rule://zzprobe]]`). `file://`은 omp 런타임(Bun)의 URL 파서로 풀려 Node의 파서와 갈립니다(`file:///a:b/../tmp/x`). 이 둘을 미러하는 방식은 리뷰 r2·r4에서 두 번 어긋났습니다. 차단은 `read-path.mjs`의 `mutationRefusal`이 판정하고 `index.ts`의 `tool_call`이 cross-repo 가드·context-gate보다 먼저 적용합니다(이슈 본문에 없는 범위 확장 — 사용자가 승인). 두 번째 언래핑과 `write`의 `file://` 해석 코드는 두지 않습니다. `edit`은 대상이 아닙니다(pi-edit은 한 번만 벗기고 URL 파서를 쓰지 않습니다)."
-  - "8번(삭제 경합)은 좁히고 남는 경우를 잔존면으로 둡니다. 실측: omp는 아카이브가 있으면 같은 이름의 실제 파일이 아니라 멤버를 읽고(멤버가 없으면 실패), 실제 파일의 평범한 읽기는 `resolvedPath` 없이 path 소스만 싣습니다. 그래서 아카이브로 줄이는 대상을 `resolvedPath`가 실린 결과로 한정합니다(멤버 읽기는 항상 싣습니다). 남는 경우는 아카이브가 없을 때 실제 파일을 `resolvedPath`가 실리는 방식(`?q=`)으로 읽고, 핸들러가 돌기 전에 아카이브가 생기고 그 파일이 지워지는 경우입니다. 이것까지 닫으려면 줄이기를 없애야 하고, 그러면 1번이 아카이브 쓰기를 아카이브 읽음에 묶기 때문에 JSON 쿼리·PDF 멤버를 읽은 뒤 그 아카이브에 쓰는 흐름이 막힙니다(#109 AC5의 거짓 차단 복귀)."
-  - "통합 계약의 원장 정규화 문단과 그 안의 잔존면 서술을 결과에 맞게 고칩니다(이슈 범위 3). 같은 배치의 다른 워커가 `.omp/rules/harness-harness_integration_contract.md`·`docs/harness/audit.jsonl`·`CHANGELOG.md`를 함께 건드리므로 이 이슈 범위 밖의 줄은 고치지 않습니다."
+  - "판정 불가는 fail-closed로 두는 #15의 원칙을 유지합니다. 이전에 차단되던 형태를 통과시키면 안 됩니다 — 커밋·푸시(②)와 파일 변경(①) 양쪽 모두."
+  - "가드가 추적하는 cwd와 ① 레일의 귀속 규칙은 바꾸지 않습니다. `time` 뒤 cwd 이동과 CDPATH 상대 cd는 '이후 커밋·푸시는 판정 불가'만 더합니다(사용자 결정 B)."
+  - "셸의 실제 동작은 추측하지 않고 bash 실측(픽스처 리포에서 커밋이 어디에 떨어지는지)으로 확인합니다."
+  - "`commitTargetDir`·`verificationCwd`의 공개 시그니처와 #111이 정한 동작(선행 리터럴 cd 1회 추적)은 유지합니다."
+  - "같은 배치의 다른 워커가 `harness-harness_integration_contract.md`·`docs/harness/audit.jsonl`·`CHANGELOG.md`를 함께 고치므로 이 이슈가 다루는 줄만 고칩니다(계약: cross-repo 가드 설명 한 구절, cross-repo 잔존면 한 구절과 새 항목 하나, HEAD 스냅샷 잔존면의 해당 구절; CHANGELOG `[Unreleased]` 한 항목)."
+  - "계약 문구에 아직 없는 후속 이슈 번호를 적지 않습니다(후속 이슈는 #149가 닫힌 뒤 코디네이터가 만듭니다)."
   - "버전 범프·태그·머지·force-push는 하지 않습니다."
 acceptance_criteria:
   - id: AC1
-    title: "읽지 않은 `arc.tar`에 대한 `write arc.tar:member.json`과 읽지 않은 `/abs/file.md`에 대한 `write @/abs/file.md`가 context-gate에 막힙니다(회귀 테스트). `editTargets('write', { path: 'arc.tar:member.json' }, cwd)`는 `[<cwd>/arc.tar]`를 돌려줍니다."
+    title: "`time cd <다른 하네스 리포> && git commit -m x`가 BLOCK됩니다(RED→GREEN 회귀 테스트, `tests/cross-repo.test.mjs`)."
   - id: AC2
-    title: "`://`를 포함한 로컬 경로의 `write`가 게이트 대상이 됩니다(`notes/a://b.md` → `<cwd>/notes/a:/b.md`). omp가 URL로 다루는 형태만 가상 주소로 남고, 모르는 스킴은 그 문자열이 가리킬 파일로 판정합니다."
+    title: "이슈 실측 표의 나머지 다섯 형태의 판정이 테스트로 고정되고, 거짓 차단 두 형태는 그대로 둡니다(근거는 PR과 계약 문서에 적습니다)."
   - id: AC3
-    title: "4~8번 각각에 재현 테스트와 처리 결과가 있습니다 — 4(edit 직접 경로 래퍼)·5(헤더 줄 경계)·7(심볼릭 링크를 건넌 `..`)은 수정, 6(경로 안 개행)은 #111에서 닫힌 것을 핸들러 수준 테스트로 고정, 8(삭제 경합)은 `resolvedPath` 결과로 한정해 좁히고 남는 경우를 근거가 붙은 잔존면으로 기록."
+    title: "`CDPATH`가 걸린 상대 `cd`의 실측 결과와 판정(fail-closed)이 계약 문서에 적히고, 판정이 테스트로 고정됩니다."
   - id: AC4
-    title: "`node --test .omp/extensions/harness/tests/*.test.mjs` 전 항목과 `node scripts/docs-drift`가 통과하고, `CHANGELOG.md` `[Unreleased]`와 통합 계약의 원장 정규화 문단이 결과를 반영합니다."
-  - id: AC5
-    title: "한 번 벗긴 뒤에도 래퍼이거나 `file://` URL인 `write` 경로는 읽음 장부와 무관하게 `tool_call`에서 `HARNESS BLOCK`으로 차단됩니다 — `[[src/foo.ts]]`(읽은 파일 포함), `[[file:///a:b/../tmp/victim.md]]`, `[[rule://x]]`, 최상위 `file://…`. 래퍼 한 겹(`[src/foo.ts#1A2B]`)과 일반 경로, `edit`은 이전처럼 판정됩니다(단위·핸들러 수준 회귀 테스트)."
+    title: "`node --test .omp/extensions/harness/tests/*.test.mjs` 전 항목과 `node scripts/docs-drift`가 통과합니다."
 out_of_scope:
-  - "`read`의 목록 읽기(`a.md;b.md`) 부분별 기록 — #150."
-  - "`xd://apply_patch` 등 와이어 별칭 디바이스의 추적(2026-11-17 감사 U3)."
-  - "`xd://ast_edit` 본문 `paths`의 확장·검색 경로 분할(`resolveToolSearchScope`) — 8개 항목에 없는 기존 형태입니다. 계약 문서의 남은 간극에만 적습니다."
-  - "Windows 네이티브에서만 동작하는 확장(확장 길이 접두 `\\\\?\\`, MSYS `/c/…` 드라이브 별칭)의 미러 — 이 호스트에서 실측할 수 없습니다. 남은 간극에 적습니다."
-  - "`grep`·`ast_grep` 결과 경로(`details.files`·헤더)의 `..` 해석 변경 — 네이티브 검색 도구의 보고 형태를 실측하지 않았으므로 기존 `resolve`를 유지합니다."
-  - "`harness-friction`의 `references/harness-surface.md` 갱신 — 이슈 범위에 없습니다. PR 본문에 후속 관찰로만 적습니다."
-  - "`edit`의 `MV DEST` 대상 추적, `edit.citationTags`."
+  - "임의 셸 구문의 완전한 해석(서브셸·함수·`eval`) — 이슈 본문의 범위 밖입니다."
+  - "#111의 범위(CoW 워크트리 상태 격리, `commitTargetDir` 정합화)."
+  - "실행되지 않은 `cd`의 역방향 우회(bash 도구 `cwd`가 다른 리포일 때 `cd <세션 리포> | cat; git commit` 등)를 닫는 것 — 실측해 계약 잔존면에 적고 후속 이슈로 넘깁니다(사용자 결정 B). v1의 후보 모델(AC5)이 이것이었습니다."
+  - "`time cd` 뒤와 CDPATH 상대 `cd` 뒤의 ① 레일 귀속을 고치는 것 — 이전과 같은 귀속(떠난 디렉터리 / `<cwd>/<dir>`)을 유지하고 잔존면으로 적습니다."
+  - "거짓 차단을 줄이는 것(`time cd <세션 리포 안>`, `\\time`·`command time`, 빈 `CDPATH=`, `unset CDPATH`)."
 assumptions:
-  - "시작 HEAD는 main ea9a9c3(2026.92 범프)이고 `read-path.mjs`는 #109 머지(fcd6be1) 이후 변경이 없습니다."
-  - "설치된 omp는 18.22.0이며 실측은 이 버전의 `read`/`write` 도구를 확장 없이(`omp -p --no-session --no-extensions`) 돌려 했습니다. 소스는 태그 `v18.22.0`의 원본을 받아 읽었습니다."
-  - "omp 18.22.0의 확장 이벤트는 해시라인 `edit`의 `input.path`·`input.paths`를 헤더에서 뽑아 래퍼를 벗긴 형태로 싣고(`tool-event-input.ts` `normalizeToolEventInput`), replace/patch 모드의 `path`는 모델이 쓴 문자열 그대로 싣습니다. pi-edit `resolve`는 어느 쪽이든 `[path#TAG]`를 벗깁니다(소스 확인, 모드 전환 실측은 하지 않았습니다)."
-  - "하네스가 도는 플랫폼은 Linux·WSL·macOS입니다(통합 계약 Known residual surfaces의 Windows native 항목)."
+  - "시작 HEAD는 main f660c3c(PR #154 머지 뒤)이고 `gates/git-commit-detect.mjs`·`gates/cross-repo.mjs`는 ea9a9c3 이후 변경이 없습니다."
+  - "실측 셸은 GNU bash 5.2.21(WSL)입니다. omp bash 도구의 셸도 bash 문법을 따른다고 봅니다."
 risks:
-  - "`write` 대상 해석이 디스크를 봅니다(아카이브·SQLite 후보의 존재와 종류, SQLite 헤더 16바이트, 절대 경로의 `..` 앞 realpath). 게이트 판정(tool_call)과 omp의 실제 쓰기 사이에 디스크가 바뀌면 어긋날 수 있습니다 — context-gate의 `existsSync`와 같은 종류의 창입니다."
-  - "쓰기 쪽 컨테이너 확장자 목록은 omp 버전에 묶여 있고 닫힌 쪽으로 실패하지 않습니다 — omp가 아카이브·SQLite 확장자를 더하면 그 확장자의 멤버 쓰기는 목록에 넣기 전까지 리터럴 문자열로 게이트됩니다(#152 이전의 간극이 그 확장자에 한해 남습니다)."
-  - "가상 주소 판정이 좁아져 모르는 스킴(`newdev://x`)은 로컬 파일 이름으로 판정됩니다. omp가 그런 `write`를 거부하므로 게이트는 쓰이지 않는 파일을 볼 뿐이지만, omp가 새 내부 스킴을 더하면 그 스킴의 쓰기 결과가 `<cwd>/newdev:/x` 유령 항목으로 장부에 남습니다(단일 슬래시 형태에 대해 이미 받아들인 방향)."
-  - "동작이 달라집니다: `pack.zip`과 실제 파일 `pack.zip:x`가 함께 있을 때 `write pack.zip:x`는 아카이브를 봅니다(실측과 일치). 읽지 않은 아카이브·DB에 멤버를 쓰려면 먼저 그 파일을 읽어야 합니다."
-  - "8번 삭제 경합의 좁힌 나머지가 남습니다(위 제약). 심각도 판정이 리뷰에서 갈렸던 항목입니다(#109 r7: adversary high / adversary-opus·primary low). 좁히기는 omp가 `<archive>:<member>` 보고에 항상 `resolvedPath`를 싣는다는 18.22.0의 형태에 묶여 있고, 그 형태가 사라지면 멤버 읽기가 유령 경로로 퇴화합니다(닫힌 쪽)."
-  - "`edit` 미러는 pi-edit 소스(`path_policy.rs`)를 읽어 옮긴 것이고 `edit` 도구로 실측하지 않았습니다(replace/patch 모드 전환과 해시라인 앵커가 필요). Rust `Path::join`·`trim_end`의 의미는 표준 라이브러리 정의에 따랐습니다."
-  - "새 차단 동작이 생깁니다: `write [[path]]`와 `write file://…`은 파일을 읽었더라도 막히고, `[x]`라는 이름의 실제 파일을 `[[x]]`로 쓰는 호출도 막힙니다(경로를 그대로 쓰면 됩니다). 차단 판정은 래퍼 문법(omp `unwrapHashlineHeaderPath` 포팅)에 묶여 있어, omp가 래퍼 문법을 넓히면 그 형태는 한 겹 래퍼가 리터럴로 판정되는 기존 방향(유령 경로)으로 퇴화합니다."
-  - "이 세션에 로드된 확장은 옛 코드입니다 — 실제 게이트 동작은 핸들러 테스트와 중첩 세션(`omp -p --no-session`) 실측으로 검증하고, 새 세션부터 적용됩니다."
+  - "`time` 뒤 cwd 이동과 CDPATH 상대 `cd`는 대상을 따라가지 않으므로, 실제로는 세션 리포에 떨어지는 커밋도 차단됩니다(거짓 차단 — 안전한 방향)."
+  - "omp 프로세스가 `CDPATH`를 export한 채 뜨면 `cd sub && git commit`이 판정 불가로 차단됩니다 — `cd ./sub`로 쓰거나 호출 env에 `CDPATH: ''`를 넘겨야 합니다."
+  - "역방향 우회와 ① 레일의 `time cd`·CDPATH 귀속은 닫히지 않은 채 남습니다(계약 잔존면에 실측과 함께 기록)."
+  - "이 세션에 로드된 확장은 옛 코드입니다 — 실제 가드 동작은 핸들러·단위 테스트와 실측 스크립트로 검증하고, 새 세션부터 적용됩니다."
 references:
-  - path: https://github.com/rae-hugo-kim/pylon/issues/152
-    reason: 명세(항목 8건·범위·AC·범위 밖)
-  - path: https://github.com/rae-hugo-kim/pylon/pull/151
-    reason: "#109 PR 본문의 '범위 밖으로 남긴 기존 결함'과 리뷰 이력"
-  - path: .omp/extensions/harness/gates/read-path.mjs
-    reason: isVirtualPath·routedUrl·openedPath·localFileTarget·headerPaths·unwrapHeader·expandPath·wslMount·unresolvableWrite·writeTarget·editTarget·editTargets·mutationRefusal·reportedTarget
-  - path: .omp/extensions/harness/index.ts
-    reason: tool_call의 edit|write 분기 — `mutationRefusal` 차단(AC5)
-  - path: .omp/extensions/harness/tests/read-path.test.mjs
-    reason: 항목별 단위 회귀 테스트("#152-1" ~ "#152-9")
-  - path: .omp/extensions/harness/tests/read-ledger-wiring.test.mjs
-    reason: 실제 핸들러·게이트로 context-gate 판정과 read-log를 관측하는 종단 테스트("#152 AC1", "#152 AC2", "#152-4", "#152-1", "#152-6", "#152 AC5")
-  - path: .omp/extensions/harness/tests/state-origin.test.mjs
-    reason: 6번의 기존 재현 테스트("a path with a line break cannot write ledger lines of its own", #111)
+  - path: https://github.com/rae-hugo-kim/pylon/issues/149
+    reason: 명세(실측 표·범위·AC·범위 밖)와 결정 댓글 두 건(nonce 1795275983-9189, 1795430663-26709)
+  - path: https://github.com/rae-hugo-kim/pylon/pull/148#issuecomment-6998750778
+    reason: 출처 — PR #148 교차검증 (E) 항목과 "단일 cwd 모델" 항목
+  - path: .omp/extensions/harness/gates/git-commit-detect.mjs
+    reason: timedProgram·cdpathSearches·scanWriteTargets의 doubt·scanGitCall·shellWriteTargets
+  - path: .omp/extensions/harness/gates/cross-repo.mjs
+    reason: crossRepoBashVerdict — 판정 로직은 그대로, 주석과 fail-closed 안내 문구
+  - path: .omp/extensions/harness/tests/cross-repo.test.mjs
+    reason: AC1·AC2·AC3 회귀 테스트
+  - path: .omp/extensions/harness/tests/git-commit-detect.test.mjs
+    reason: commitTargetDir가 두 형태에서 null을 돌려주는지
   - path: .omp/rules/harness-harness_integration_contract.md
-    reason: 원장 정규화 문단(§1 Ledger path normalization)과 그 안의 잔존면 서술
-  - path: CHANGELOG.md
-    reason: "[Unreleased] #152 항목"
+    reason: cross-repo 가드 설명(20행), cross-repo 잔존면(44행)과 #149 항목(45행), HEAD 스냅샷 잔존면(116행)
 estimate:
   risk: high
-  files: 9
+  files: 6
   depth: high
   model: anthropic/claude-fable-5-2
   effort: high
